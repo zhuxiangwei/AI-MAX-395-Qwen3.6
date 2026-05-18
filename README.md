@@ -52,7 +52,7 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 |-----------|-------------------|
 | Inference OS | Ubuntu 26.04 LTS |
 | Cloud OS | Ubuntu 24.04.4 LTS |
-| llama.cpp | Vulkan backend (`GGML_USE_VULKAN=on`) |
+| llama.cpp | b9210 (commit c3f95c1f0, Vulkan backend) |
 | Vulkan runtime | 1.4.341 |
 | API protocol | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) |
 
@@ -189,7 +189,7 @@ ssh -R 8080:127.0.0.1:12345 \
 
 ### systemd Service (Production)
 
-**File:** `/etc/systemd/system/llm-tunnel.service`
+**File:** `~/.config/systemd/user/llm-tunnel.service` (user-level, no sudo needed)
 
 ```ini
 [Unit]
@@ -200,7 +200,6 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User={account_name}
 ExecStart=/usr/bin/ssh \
     -o StrictHostKeyChecking=accept-new \
     -o ServerAliveInterval=60 \
@@ -210,18 +209,20 @@ ExecStart=/usr/bin/ssh \
     -R 8080:127.0.0.1:12345 \
     -N \
     root@{your_server_ip}
-Restart=always
+Restart=on-failure
 RestartSec=10
-NoNewPrivileges=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable llm-tunnel
-sudo systemctl start llm-tunnel
+mkdir -p ~/.config/systemd/user
+# Create the service file, then:
+systemctl --user daemon-reload
+systemctl --user enable llm-tunnel
+systemctl --user start llm-tunnel
+loginctl enable-linger   # survive logout
 ```
 
 ### SSH Key Setup (Passwordless)
@@ -236,6 +237,13 @@ ssh root@{your_server_ip} "echo OK"   # verify
 ---
 
 ## Inference Service (llama.cpp)
+
+### Build Info
+
+- **Version**: b9210 (commit c3f95c1f0)
+- **Build command**: `cmake -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release -j$(nproc)`
+- **Key enabled options**: `GGML_VULKAN=ON`, `GGML_BLAS=ON(OpenBLAS)`, `GGML_OPENMP=ON`, `GGML_LLAMAFILE=ON`, `GGML_LTO=ON`, `GGML_NATIVE=ON`, `GGML_CPU_REPACK=ON`, `LLAMA_OPENSSL=ON`, `LLAMA_BUILD_SERVER=ON`
+- **Disabled**: `LLAMA_BUILD_UI=OFF`, `LLAMA_BUILD_TESTS=OFF`, `LLAMA_BUILD_EXAMPLES=OFF`
 
 ### 128K Speed-Optimized Configuration
 
@@ -255,14 +263,18 @@ $HOME/llama/llama.cpp/build/bin/llama-server \
     --api-key {your_api_key}
 ```
 
-**Benchmarks (3-round average, 128K context):**
+> **`-np 1` is mandatory and must NOT be changed.** MTP speculative decoding does not support multi-slot; concurrent requests cause 75% speed loss. Always keep this at 1.
 
-| Model | File | Arch | Speed (t/s) | Detail |
-|-------|------|------|:-----------:|--------|
-| **35B-A3B Q8** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | MoE | **48.29** | 48.64, 47.11, 49.11 |
-| **27B Q4** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | Dense | **21.22** | 20.35, 21.88, 21.43 |
-| **27B Q6** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | Dense | **15.09** | 15.86, 14.69, 14.72 |
-| **27B Q8** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | Dense | **11.32** | 11.46, 11.16, 11.35 |
+**Benchmarks (3-round average, 128K context, b9187):**
+
+| Model | File | Arch | Speed (t/s) | MTP Hit Rate (b9210) | Detail |
+|-------|------|------|:-----------:|:--------------------:|--------|
+| **35B-A3B Q8** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | MoE | **48.29** | **86.5%** | 48.64, 47.11, 49.11 |
+| **27B Q4** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | Dense | **21.22** | ~80% | 20.35, 21.88, 21.43 |
+| **27B Q6** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | Dense | **15.09** | ~80% | 15.86, 14.69, 14.72 |
+| **27B Q8** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | Dense | **11.32** | ~76% | 11.46, 11.16, 11.35 |
+
+> **Note**: Speed figures are from b9187. After updating to b9210, MTP acceptance rate on 35B-A3B jumped from ~75% to **86.5%** due to two MTP bug-fix commits. Server-side eval speed is ~71 t/s; client-side short generation reaches ~63 t/s.
 
 ### 256K Ultra-Long Context (35B-A3B only, no MTP)
 
@@ -278,6 +290,8 @@ $HOME/llama/llama.cpp/build/bin/llama-server \
     --api-key {your_api_key}
 ```
 
+> **`-np 1` is mandatory** — same reason as above.
+
 - Speed: **~0.67 t/s** (at 213K tokens prompt) — very slow, use only when 128K context is insufficient
 - MTP **hurts** at 256K (0.59 t/s vs 0.67 t/s) — large batch crashes Vulkan, small batch gains nothing
 
@@ -287,7 +301,7 @@ $HOME/llama/llama.cpp/build/bin/llama-server \
 
 ```ini
 [Unit]
-Description=LLM Inference Service (Qwen3.6-35B-A3B)
+Description=LLM Inference Service (Qwen3.6-35B-A3B, 128K MTP)
 After=network.target
 
 [Service]
@@ -303,6 +317,7 @@ ExecStart=$HOME/llama/llama.cpp/build/bin/llama-server \
     --timeout 3600 \
     --host 127.0.0.1 --port 12345 \
     --api-key {your_api_key}
+# ⚠ -np 1 is MANDATORY — MTP does not support multi-slot
 Restart=on-failure
 RestartSec=10
 
@@ -354,12 +369,13 @@ All tests below were conducted on the 35B-A3B MoE model with 128K context unless
 
 ### MTP Impact
 
-| Config | Speed (t/s) | vs No MTP |
-|--------|:-----------:|:---------:|
-| No MTP | 47.72 | baseline |
-| MTP (draft-n-max=3) | 65.24 | **+36.7%** |
+| Config | Speed (t/s) | MTP Hit Rate | vs No MTP |
+|--------|:-----------:|:------------:|:---------:|
+| No MTP | 47.72 | N/A | baseline |
+| MTP (draft-n-max=3, b9187) | 48.29 | ~75% | +1.2% |
+| MTP (draft-n-max=3, b9210) | ~63.5 | **86.5%** | **+33.1%** |
 
-> MTP is the single biggest speedup. Always enable it for 128K context.
+> MTP is the single biggest speedup. The b9210 update fixed two MTP bugs, raising acceptance rate from ~75% to 86.5% and significantly improving effective throughput.
 
 ### Other Parameters (35B-A3B, 128K)
 
@@ -446,7 +462,7 @@ Need 256K context?
 
 | Limit | Value | Reason |
 |-------|-------|--------|
-| Max concurrent slots | 1 (`-np 1`) | MTP does not support multi-slot |
+| Max concurrent slots | 1 (`-np 1`) | **Mandatory** — MTP does not support multi-slot; concurrency causes 75% speed loss |
 | Max context | 128K (recommended) | 256K is extremely slow |
 | Avoid thinking mode | Don't enable `thinking=1` | Lowers MTP acceptance rate |
 | Avoid concurrency | 1 request at a time | 5 concurrent → 75% speed loss |
@@ -483,13 +499,14 @@ curl https://{your_domain}/v1/chat/completions \
 ## Key Takeaways
 
 1. **MoE dominates** — 35B-A3B (3B active) is 4.3× faster than 27B Dense Q8
-2. **MTP is critical** — +36.7% speedup with `--spec-draft-n-max 3`
+2. **MTP is critical** — b9210 brings 86.5% acceptance rate (up from ~75% in b9187)
 3. **`-t 12` is optimal** — not more threads (inverted-U curve)
 4. **Memory bandwidth is the bottleneck** for Dense models — quantization level directly determines speed
 5. **256K context is a last resort** — 128K with MTP is the sweet spot
 6. **Network overhead is negligible** — 3–5% via HTTPS, use streaming for best UX
 7. **No concurrency** — single-slot MTP, avoid concurrent requests
+8. **b9210 update recommended** — two MTP bug fixes significantly improve acceptance rate
 
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp Vulkan · 2026-05-18*
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9210 Vulkan · 2026-05-18*

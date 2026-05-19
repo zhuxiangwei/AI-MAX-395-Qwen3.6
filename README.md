@@ -1,5 +1,7 @@
 # Strix Halo LLM Deploy — Qwen3.6
 
+**[English](./README.md)** | **[中文](./README.zh-CN.md)**
+
 Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with llama.cpp + Vulkan, and expose the inference API to the internet via SSH reverse tunnel + Nginx HTTPS.
 
 ## Architecture
@@ -25,6 +27,9 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 - Cloud server runs **only Nginx** (port 443) — no application code
 - SSH reverse tunnel provides NAT traversal (home network → cloud)
 - OpenAI-compatible API endpoint at `https://{your_domain}/v1/`
+- **Router Mode** with per-model preset INI — automatic LRU model switching
+- **Alias short names** (358/278/276/274) for convenient model selection
+- **Clean parameter separation**: service = server-level only, INI = model-level only
 
 ---
 
@@ -34,15 +39,12 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 |-----------|--------------|
 | Machine | FEVM faex1 mini PC |
 | APU | AMD Ryzen AI Max+ 395 (16C/32T) |
-| Memory | 128 GB LPDDR5X (256-bit) |
+| Memory | 128 GB LPDDR5X (256-bit, unified memory) |
 | Storage | 1 TB NVMe SSD |
 | iGPU | Radeon 8060S (RDNA 3.5, 40 CU, 2040 MHz) |
 | GTT (GPU-accessible RAM) | 120 GB (kernel param `amdgpu.gttsize=122880`) |
 
-**Memory bandwidth analysis:**
-- Theoretical: 256-bit × 8533 MT/s ÷ 8 = **273 GB/s**
-- Practical: ~200 GB/s (after system overhead)
-- **Dense models are memory-bandwidth bound** — thread count has minimal impact
+**Memory bandwidth:** 256-bit × 8000 MT/s ÷ 8 = **256 GB/s** theoretical, ~200 GB/s practical. Dense models are memory-bandwidth bound.
 
 ---
 
@@ -60,23 +62,25 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 
 | Item | Path |
 |------|------|
-| Model files | `$HOME/model/` |
-| llama.cpp source | `$HOME/llama/llama.cpp/` |
+| Model files + preset INI | `$HOME/model/` |
 | llama-server binary | `$HOME/llama/llama.cpp/build/bin/llama-server` |
-| Service log | `$HOME/llama-server.log` |
+| Router preset | `$HOME/model/router-preset.ini` |
 
 ---
 
 ## Model Inventory
 
-> Only one model runs at a time (manual switch; auto-switch tool planned).
+Router Mode serves all models from `$HOME/model/`. Only one is loaded at a time (`--models-max 1`), switching via LRU on client request. Each model has an **alias** for short-name routing.
 
-| Model | File | Quant | Arch | Size | Active Params |
-|-------|------|-------|------|------|---------------|
-| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | Q8_K_XL | **MoE** | ~37 GB | 3B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | Q4_K_XL | Dense | ~17 GB | 27B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | Q6_K_XL | Dense | ~25 GB | 27B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | Q8_K_XL | Dense | ~34 GB | 27B |
+| Model | File | Alias | Quant | Arch | Size | Active Params |
+|-------|------|-------|-------|------|------|---------------|
+| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | Q8_K_XL | **MoE** | ~37 GB | 3B |
+| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | Q8_K_XL | Dense | ~34 GB | 27B |
+| Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | Q6_K_XL | Dense | ~25 GB | 27B |
+| Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | Q4_K_XL | Dense | ~17 GB | 27B |
+
+> **Alias naming convention:** 3 digits = model size + quant level. e.g. `358` = 35B Q8, `274` = 27B Q4.
+> Both alias and full filename work in the `model` field of API requests.
 
 ---
 
@@ -112,7 +116,6 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Long timeouts (LLM inference is slow)
         proxy_read_timeout 3600s;
         proxy_connect_timeout 60s;
         proxy_send_timeout 3600s;
@@ -133,10 +136,7 @@ server {
 }
 ```
 
-**Apply:**
-```bash
-sudo nginx -t && sudo systemctl reload nginx
-```
+**Apply:** `sudo nginx -t && sudo systemctl reload nginx`
 
 ### 2. SSL Configuration
 
@@ -151,8 +151,6 @@ ssl_ciphers HIGH:!aNULL:!MD5;
 ssl_prefer_server_ciphers on;
 ```
 
-> Comment out the default snakeoil self-signed certs and use your real certificates.
-
 ### 3. Cloud SSH Server
 
 **File:** `/etc/ssh/sshd_config`
@@ -164,28 +162,11 @@ ClientAliveCountMax 3
 # GatewayPorts no   (default — keep tunnel on 127.0.0.1 only)
 ```
 
-**Apply:**
-```bash
-sudo systemctl restart ssh
-sudo sshd -T | grep -E "allowtcpforwarding|clientaliveinterval|gatewayports"
-```
+**Apply:** `sudo systemctl restart ssh`
 
 ---
 
 ## SSH Reverse Tunnel
-
-### Inference Box → Cloud (Forward Tunnel for API)
-
-The inference box establishes an SSH reverse tunnel so the cloud Nginx can reach `localhost:12345`:
-
-```bash
-ssh -R 8080:127.0.0.1:12345 \
-    -o StrictHostKeyChecking=accept-new \
-    -o ServerAliveInterval=60 \
-    -o ServerAliveCountMax=3 \
-    -o ExitOnForwardFailure=yes \
-    -N root@{your_server_ip}
-```
 
 ### systemd Service (Production)
 
@@ -216,6 +197,8 @@ RestartSec=10
 WantedBy=default.target
 ```
 
+**Tunnel port:** `-R 8080:127.0.0.1:12345` (API)
+
 ```bash
 mkdir -p ~/.config/systemd/user
 # Create the service file, then:
@@ -231,95 +214,45 @@ On the inference box:
 ```bash
 ssh-keygen -t ed25519 -C "llm-tunnel@faex1"
 ssh-copy-id root@{your_server_ip}
-ssh root@{your_server_ip} "echo OK"   # verify
 ```
 
 ---
 
-## Inference Service (llama.cpp)
+## Inference Service (Router Mode)
 
-### Build Info
+### Parameter Separation
 
-- **Version**: b9210 (commit c3f95c1f0)
-- **Build command**: `cmake -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release -j$(nproc)`
-- **Key enabled options**: `GGML_VULKAN=ON`, `GGML_BLAS=ON(OpenBLAS)`, `GGML_OPENMP=ON`, `GGML_LLAMAFILE=ON`, `GGML_LTO=ON`, `GGML_NATIVE=ON`, `GGML_CPU_REPACK=ON`, `LLAMA_OPENSSL=ON`, `LLAMA_BUILD_SERVER=ON`
-- **Disabled**: `LLAMA_BUILD_UI=OFF`, `LLAMA_BUILD_TESTS=OFF`, `LLAMA_BUILD_EXAMPLES=OFF`
+| Scope | Where | Examples |
+|-------|-------|---------|
+| **Server-level** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--sleep-idle-seconds`, `--timeout` |
+| **Model-level** | `router-preset.ini` per-model section | `n-gpu-layers`, `ctx-size`, `ubatch-size`, `threads`, `alias`, `spec-type`, `mlock`, `numa`, ... |
 
-### 128K Speed-Optimized Configuration
+> Model parameters are defined **only** in the INI — never duplicated in the service file.
 
-**Common base parameters** — only the model file differs:
+### systemd Service
 
-```bash
-$HOME/llama/llama.cpp/build/bin/llama-server \
-    -m $HOME/model/<MODEL_FILE>.gguf \
-    -ngl 99 -c 131072 -fa on -np 1 \
-    -t 12 -b 8192 -ub 8192 \
-    --spec-type draft-mtp --spec-draft-n-max 3 \
-    --cache-ram 49152 \
-    --mlock --numa distribute \
-    --reasoning-budget 8192 \
-    --timeout 3600 \
-    --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key}
-```
-
-> **`-np 1` is mandatory and must NOT be changed.** MTP speculative decoding does not support multi-slot; concurrent requests cause 75% speed loss. Always keep this at 1.
-
-**Benchmarks (3-round average, 128K context, b9187):**
-
-| Model | File | Arch | Speed (t/s) | MTP Hit Rate (b9210) | Detail |
-|-------|------|------|:-----------:|:--------------------:|--------|
-| **35B-A3B Q8** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | MoE | **48.29** | **86.5%** | 48.64, 47.11, 49.11 |
-| **27B Q4** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | Dense | **21.22** | ~80% | 20.35, 21.88, 21.43 |
-| **27B Q6** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | Dense | **15.09** | ~80% | 15.86, 14.69, 14.72 |
-| **27B Q8** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | Dense | **11.32** | ~76% | 11.46, 11.16, 11.35 |
-
-> **Note**: Speed figures are from b9187. After updating to b9210, MTP acceptance rate on 35B-A3B jumped from ~75% to **86.5%** due to two MTP bug-fix commits. Server-side eval speed is ~71 t/s; client-side short generation reaches ~63 t/s.
-
-### 256K Ultra-Long Context (35B-A3B only, no MTP)
-
-```bash
-$HOME/llama/llama.cpp/build/bin/llama-server \
-    -m $HOME/model/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf \
-    -ngl 99 -c 262144 -fa on -np 1 \
-    -t 6 -b 4096 -ub 512 \
-    --cache-ram 24000 \
-    --reasoning-budget 8192 \
-    --timeout 3600 \
-    --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key}
-```
-
-> **`-np 1` is mandatory** — same reason as above.
-
-- Speed: **~0.67 t/s** (at 213K tokens prompt) — very slow, use only when 128K context is insufficient
-- MTP **hurts** at 256K (0.59 t/s vs 0.67 t/s) — large batch crashes Vulkan, small batch gains nothing
-
-### systemd User Service (Inference)
-
-**File:** `$HOME/.config/systemd/user/llm-inference.service`
+**File:** `~/.config/systemd/user/llm-router.service` (user-level, no sudo needed)
 
 ```ini
 [Unit]
-Description=LLM Inference Service (Qwen3.6-35B-A3B, 128K MTP)
+Description=LLM Router Service (llama-server multi-model)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=$HOME/llama/llama.cpp/build/bin/llama-server \
-    -m $HOME/model/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf \
-    -ngl 99 -c 131072 -fa on -np 1 \
-    -t 12 -b 8192 -ub 8192 \
-    --spec-type draft-mtp --spec-draft-n-max 3 \
-    --cache-ram 49152 \
-    --mlock --numa distribute \
-    --reasoning-budget 8192 \
-    --timeout 3600 \
+ExecStart=~/llama/llama.cpp/build/bin/llama-server \
     --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key}
-# ⚠ -np 1 is MANDATORY — MTP does not support multi-slot
+    --api-key {your_api_key} \
+    -a Qwen3.6 \
+    --models-dir ~/model \
+    --models-max 1 \
+    --models-preset ~/model/router-preset.ini \
+    --sleep-idle-seconds 600 \
+    --timeout 3600
 Restart=on-failure
 RestartSec=10
+WorkingDirectory=%h
+LimitMEMLOCK=infinity
 
 [Install]
 WantedBy=default.target
@@ -327,134 +260,176 @@ WantedBy=default.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable llm-inference
-systemctl --user start llm-inference
+systemctl --user enable llm-router
+systemctl --user start llm-router
 loginctl enable-linger   # survive logout
 ```
 
-**Operations:**
+### Preset INI (Per-Model Parameters)
+
+**File:** `~/model/router-preset.ini`
+
+Each model section contains **only model-level parameters**. Server-level settings (host, port, api-key, models-dir, etc.) live in the service file.
+
+```ini
+[Qwen3.6-35B-A3B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 256
+threads = 8
+alias = 358
+
+[Qwen3.6-27B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 256
+threads = 8
+alias = 278
+
+[Qwen3.6-27B-UD-Q6_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = 276
+
+[Qwen3.6-27B-UD-Q4_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 1024
+threads = 8
+alias = 274
+```
+
+**Design rationale:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `ctx-size = 262144` | All models | Unified 256K; -c doesn't affect performance, only pre-allocates KV cache |
+| `batch-size = 4096` | All models | Optimal scheduling granularity; b must divide by ub |
+| `ubatch-size` | 256/256/512/1024 | Per-quant VRAM budget: higher quant → smaller ub for 256K stability |
+| `threads = 8` | All models | Full GPU offload; t=8 vs t=16 < 2% difference; t=8 runs cooler |
+| `alias` | 358/278/276/274 | Short names for convenient API routing |
+
+**To change model parameters:** edit the INI file → `systemctl --user restart llm-router`
+
+> ⚠️ **27B Dense models have NOT been benchmarked at 256K context.** VRAM may be insufficient for Q8 (~34 GB weights + KV cache). Start with Q4 (smallest) to validate.
+
+### Model Switching
+
+Clients specify the `model` field in API requests. Both **alias short names** and **full filenames** work. Router switches automatically (LRU, 8–17 seconds cold load):
+
 ```bash
-systemctl --user status llm-inference
-systemctl --user restart llm-inference
-journalctl --user -u llm-inference -f
+# Using alias (recommended)
+curl https://{your_domain}/v1/chat/completions \
+  -H "Authorization: Bearer {your_api_key}" \
+  -d '{"model": "358", ...}'
+
+# Using full filename (also works)
+curl https://{your_domain}/v1/chat/completions \
+  -H "Authorization: Bearer {your_api_key}" \
+  -d '{"model": "Qwen3.6-35B-A3B-UD-Q8_K_XL", ...}'
 ```
 
----
+**QClaw integration:**
 
-## Parameter Tuning Findings
-
-All tests below were conducted on the 35B-A3B MoE model with 128K context unless noted.
-
-### Thread Count (`-t`)
-
-| `-t` | Speed (t/s) | vs `-t 12` |
-|:----:|:-----------:|:----------:|
-| 6 | 61.27 | -6.5% |
-| 10 | 60.98 | -6.0% |
-| **12** | **65.24** | **baseline** |
-| 16 | 58.62 | -10.2% |
-| 24 | 61.0 | -6.5% |
-
-> Inverted-U curve: `-t 12` (37.5% of 32 threads) is the sweet spot. More threads introduce synchronization overhead.
-
-### MTP Draft Depth (`--spec-draft-n-max`)
-
-| Value | Speed (t/s) | vs 3 |
-|:-----:|:-----------:|:----:|
-| 2 | 62.68 | -4% |
-| **3** | **65.24** | **baseline** |
-| 4 | 51.80 | -20.6% |
-
-> Too many speculative drafts hurt — the rejection cost outweighs the acceptance gain.
-
-### MTP Impact
-
-| Config | Speed (t/s) | MTP Hit Rate | vs No MTP |
-|--------|:-----------:|:------------:|:---------:|
-| No MTP | 47.72 | N/A | baseline |
-| MTP (draft-n-max=3, b9187) | 48.29 | ~75% | +1.2% |
-| MTP (draft-n-max=3, b9210) | ~63.5 | **86.5%** | **+33.1%** |
-
-> MTP is the single biggest speedup. The b9210 update fixed two MTP bugs, raising acceptance rate from ~75% to 86.5% and significantly improving effective throughput.
-
-### Other Parameters (35B-A3B, 128K)
-
-| Parameter Change | Speed Impact | Keep? |
-|-----------------|:------------:|:-----:|
-| `-c 262144` (vs 131072) | -9.5% | Only when needed |
-| Remove `--numa distribute` | -6.4% | ✅ Keep |
-| Remove `--mlock` | -9.7% | ✅ Keep |
-| `-fa off` | -10.6% | ✅ Keep |
-| `-b 4096` (vs 8192) | -6.9% | ❌ 8192 is optimal |
-| `-b 16384` (vs 8192) | -9.8% | ❌ Too large |
-| `--no-mmap` | ~0% | ❌ No measurable difference |
-| 5 concurrent requests | -74.7% (avg 16.5 t/s) | ❌ Avoid concurrency |
-
-### Dense Model Quantization Comparison
-
-| Quant | Speed (t/s) | vs Q8 | Model Size |
-|:-----:|:-----------:|:-----:|:----------:|
-| Q4_K_XL | 21.22 | +87.6% | ~17 GB |
-| Q6_K_XL | 15.09 | +33.2% | ~25 GB |
-| Q8_K_XL | 11.32 | baseline | ~34 GB |
-
-> Speed scales almost linearly with model size — memory bandwidth is the bottleneck for Dense models.
-
-### 256K Context Findings
-
-| Scenario | Result |
-|----------|--------|
-| Large batch (`-b 8192 -ub 8192`) + 256K | **Vulkan DeviceLostError crash** — unusable |
-| Small batch (`-b 4096 -ub 512`) + 256K, no MTP | Works at ~0.67 t/s (213K prompt) |
-| MTP + 256K | **Slower** than no-MTP (0.59 vs 0.67 t/s) — not viable |
-| `--cache-ram 49152` + 256K | **Vulkan crash** — too much VRAM pressure |
-
-**Conclusion:** 256K context is only viable with 35B-A3B + small batch + no MTP, and is extremely slow. Use 128K whenever possible.
+| Command | Model |
+|---------|-------|
+| `/model 358` | 35B-A3B Q8 (MoE, fastest) |
+| `/model 278` | 27B Q8 (Dense, best quality) |
+| `/model 276` | 27B Q6 (Dense, balanced) |
+| `/model 274` | 27B Q4 (Dense, most economical) |
 
 ---
 
-## Model Selection Guide
+## Performance Benchmarks
 
-```
-Need 256K context?
-├─ Yes → 35B-A3B (256K, ~0.67 t/s, no MTP)
-│         ⚠ Only when 128K is truly insufficient
-└─ No → Need fastest speed?
-    ├─ Yes → 35B-A3B (128K, ~48 t/s) ✅ Recommended
-    └─ No → Dense model needed?
-        ├─ 27B Q4 → 21 t/s (fastest Dense, lowest quality)
-        ├─ 27B Q6 → 15 t/s (balanced)
-        └─ 27B Q8 → 11 t/s (best Dense quality)
-```
+### 35B-A3B (MoE, verified at 256K)
 
-**For most use cases, 35B-A3B at 128K is the clear winner** — MoE architecture activates only 3B of 35B parameters, delivering 4.3× the speed of 27B Dense Q8 with comparable quality.
+| Scenario | Config | Gen Speed | Prefill Speed | MTP Hit Rate |
+|----------|--------|-----------|---------------|-------------|
+| Short prompt | `-c 262144 -b 4096 -ub 256 -t 8` | ~72 t/s | ~114 t/s | ~100% |
+| 256K long context | `-c 262144 -b 4096 -ub 256 -t 8` | 28–31 t/s | 260–285 t/s | 54–73% |
+
+> Short prompt speeds measured on cold start (first request after model load). MTP hit rate varies with prompt content.
+
+### 27B (Dense, 128K context)
+
+| Quant | Gen Speed | MTP Hit Rate |
+|-------|-----------|-------------|
+| Q4_K_XL | ~21 t/s | ~80% |
+| Q6_K_XL | ~15 t/s | ~80% |
+| Q8_K_XL | ~11 t/s | ~76% |
+
+> 27B speeds measured at 128K context. 256K context performance TBD.
+
+### 256K Context: ub Is the Key Parameter
+
+`ub` (micro-batch size) controls VRAM peak per forward pass. It is the critical variable for 256K stability (tested on 35B-A3B MoE):
+
+| ub | 256K Stability | Prefill (t/s) | Gen (t/s) | MTP |
+|:--:|:--------------:|:-------------:|:---------:|:---:|
+| 256 | ✅ Stable | 260 | 31.3 | 73.1% |
+| 512 | ✅ Stable | 268 | 29.7 | 67.6% |
+| 1024 | ✅ Stable | 136 | 30.8 | 75.8% |
+| 2048+ | ❌ Vulkan crash | — | — | — |
+
+**Crash boundary:** ub=2048 crashes at ~155K tokens, ub=4096 at ~86K, ub=8192 at ~49K. Root cause: large ub causes VRAM peak exceeding Vulkan driver limits.
+
+**Per-quant ub strategy for 256K:**
+- Q8 → ub=256 (safest, weights are large)
+- Q6 → ub=512 (moderate headroom)
+- Q4 → ub=1024 (most headroom, smallest weights)
 
 ---
 
-## Cloud vs LAN Performance
+## Key Decisions
 
-| Metric | LAN | Cloud (HTTPS) | Overhead |
-|--------|:---:|:-------------:|:--------:|
-| Short generation (50 tokens) | ~58 t/s | ~56 t/s | ~3% |
-| Long generation (512 tokens) | ~52 t/s | ~48.5 t/s | ~5% |
-| Server-side eval | ~71 t/s | ~71 t/s | 0% |
-
-- Network overhead is **3–5%** — negligible
-- Speed variation between requests is dominated by **MTP acceptance rate**, not network latency
-- Use `"stream": true` for best perceived responsiveness (SSE already configured in Nginx)
-
----
-
-## 128 GB RAM Allocation
-
-| Purpose | Size | Notes |
-|---------|------|-------|
-| OS + system | 8 GB | Base runtime |
-| Model weights | 37 GB (35B) or 17 GB (27B Q4) | Loaded into GPU-accessible memory |
-| KV Cache | 48 GB (`--cache-ram 49152`) | Context cache for 128K |
-| System buffer/cache | ~35 GB | File cache, remaining headroom |
-
-> For 256K context, reduce `--cache-ram` to 24000 (24 GB) and use smaller batch sizes.
+| Decision | Rationale |
+|----------|-----------|
+| Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
+| Unified 256K context | -c doesn't affect performance; one config works for all prompt lengths |
+| Per-quant ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability |
+| No `--cache-ram` | Pinned alloc fails on unified memory and is 4.6% slower; default prompt cache is better |
+| `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost |
+| `-np 1` mandatory | MTP does not support multi-slot; 5 concurrent → 75% speed loss |
+| `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
+| `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 is cooler |
+| No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
+| `-a Qwen3.6` | b9210 API requires model field in responses |
+| `alias` short names | Convenient routing without symlinks; both alias and filename work |
 
 ---
 
@@ -462,32 +437,37 @@ Need 256K context?
 
 | Limit | Value | Reason |
 |-------|-------|--------|
-| Max concurrent slots | 1 (`-np 1`) | **Mandatory** — MTP does not support multi-slot; concurrency causes 75% speed loss |
-| Max context | 128K (recommended) | 256K is extremely slow |
+| Max concurrent slots | 1 (`-np 1`) | **Mandatory** — MTP does not support multi-slot |
+| Max context | 256K (ub=256) | ub≥2048 causes Vulkan crash at 128K+ |
 | Avoid thinking mode | Don't enable `thinking=1` | Lowers MTP acceptance rate |
-| Avoid concurrency | 1 request at a time | 5 concurrent → 75% speed loss |
+| Avoid concurrency | 1 request at a time | Concurrent → 75% speed loss |
+| No `--cache-ram` | Don't add it | Harmful on unified memory |
+| `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
+| 27B Dense 256K | Not yet validated | Start with Q4 to test VRAM sufficiency |
 
 ---
 
 ## Verification Checklist
 
 - [ ] Cloud Nginx config updated (with `/v1/` and `/health` endpoints)
-- [ ] Cloud SSL certificates configured in `snippets/snakeoil.conf`
+- [ ] Cloud SSL certificates configured
 - [ ] Cloud `sshd_config` allows TCP forwarding and keepalive
 - [ ] Inference box has SSH key for passwordless login to cloud
-- [ ] `llm-tunnel.service` created and **active** on inference box
-- [ ] `llm-inference.service` created and **active** on inference box
-- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns model list
+- [ ] `llm-tunnel.service` created and **active**
+- [ ] `llm-router.service` created and **active** (server-level params only)
+- [ ] `~/model/router-preset.ini` configured with model-level params + aliases
+- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns 4 models with aliases
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
-- [ ] External: chat completion works with valid API key
+- [ ] Alias routing: `curl -d '{"model":"358",...}'` routes to 35B-A3B Q8
 
 **Quick smoke test:**
 ```bash
+# Using alias
 curl https://{your_domain}/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer {your_api_key}" \
   -d '{
-    "model": "Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
+    "model": "358",
     "messages": [{"role": "user", "content": "Hello"}],
     "max_tokens": 50,
     "stream": true
@@ -496,17 +476,4 @@ curl https://{your_domain}/v1/chat/completions \
 
 ---
 
-## Key Takeaways
-
-1. **MoE dominates** — 35B-A3B (3B active) is 4.3× faster than 27B Dense Q8
-2. **MTP is critical** — b9210 brings 86.5% acceptance rate (up from ~75% in b9187)
-3. **`-t 12` is optimal** — not more threads (inverted-U curve)
-4. **Memory bandwidth is the bottleneck** for Dense models — quantization level directly determines speed
-5. **256K context is a last resort** — 128K with MTP is the sweet spot
-6. **Network overhead is negligible** — 3–5% via HTTPS, use streaming for best UX
-7. **No concurrency** — single-slot MTP, avoid concurrent requests
-8. **b9210 update recommended** — two MTP bug fixes significantly improve acceptance rate
-
----
-
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9210 Vulkan · 2026-05-18*
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9210 Vulkan · 2026-05-19*

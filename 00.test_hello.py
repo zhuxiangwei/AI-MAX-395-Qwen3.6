@@ -18,8 +18,8 @@ import subprocess
 from datetime import datetime
 
 # ── Configuration ──────────────────────────────────────────────
-DEFAULT_BASE_URL = os.environ.get("LLM_API_URL", "https://{your_domain}/v1")
-DEFAULT_API_KEY = os.environ.get("LLM_API_KEY", "{your_api_key}")
+DEFAULT_BASE_URL = os.environ.get("LLM_API_URL", "")
+DEFAULT_API_KEY = os.environ.get("LLM_API_KEY", "")
 MODELS = ["358", "278", "276", "274"]
 MODEL_NAMES = {
     "358": "35B-A3B Q8 (MoE)",
@@ -27,14 +27,14 @@ MODEL_NAMES = {
     "276": "27B Q6 (Dense)",
     "274": "27B Q4 (Dense)",
 }
-GREETING = "你好，请用一句话介绍自己。"
-SWITCH_WAIT = 20  # seconds to wait after model switch (LRU load time 8-17s)
+GREETING = "Hello, please introduce yourself in one sentence."
+SWITCH_WAIT = 25  # seconds to wait after model switch (LRU load time 8-17s, 27B Dense takes longer)
 LOG_FLUSH_WAIT = 3  # seconds for logs to flush before reading
 
 # SSH config for inference machine logs
-SSH_KEY = os.path.expanduser(os.environ.get("LLM_SSH_KEY", "~/.ssh/{your_ssh_key}"))
-SSH_HOST = os.environ.get("LLM_SSH_HOST", "192.168.x.x")  # inference machine IP
-SSH_USER = os.environ.get("LLM_SSH_USER", "{your_ssh_user}")
+SSH_KEY = os.path.expanduser(os.environ.get("LLM_SSH_KEY", ""))
+SSH_HOST = os.environ.get("LLM_SSH_HOST", "")
+SSH_USER = os.environ.get("LLM_SSH_USER", "")
 SSH_PROXY_CMD = ""  # set via LLM_SSH_PROXY if going through a jump host
 _proxy = os.environ.get("LLM_SSH_PROXY", "")
 if _proxy:
@@ -59,6 +59,9 @@ def call_model(base_url, api_key, model_id, prompt, timeout=300):
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 512,
         "stream": False,
+        # Thinking mode is enabled on server (reasoning-budget=8192)
+        # Explicitly request thinking output so we can verify it works
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
     }
 
     t0 = time.time()
@@ -70,6 +73,12 @@ def call_model(base_url, api_key, model_id, prompt, timeout=300):
             timeout=timeout,
         )
         elapsed = time.time() - t0
+        if resp.status_code != 200:
+            try:
+                err_body = resp.json()
+            except Exception:
+                err_body = resp.text[:500]
+            return {"error": f"HTTP {resp.status_code}: {err_body}"}, elapsed
         return resp.json(), elapsed
     except requests.exceptions.Timeout:
         elapsed = time.time() - t0
@@ -134,6 +143,12 @@ def main():
     parser.add_argument("--no-ssh", action="store_true", help="Skip SSH log reading")
     args = parser.parse_args()
 
+    if not args.api_url:
+        parser.error("--api-url is required (or set LLM_API_URL env var)")
+    if not args.api_key:
+        parser.error("--api-key is required (or set LLM_API_KEY env var)")
+
+
     print("=" * 64)
     print("  Router Mode 4-Model Greeting Test")
     print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -162,25 +177,34 @@ def main():
             })
         else:
             choices = response.get("choices", [{}])
-            content = choices[0].get("message", {}).get("content", "(empty)") if choices else "(no choices)"
+            msg = choices[0].get("message", {}) if choices else {}
+            content = msg.get("content", "(empty)")
+            thinking_content = msg.get("reasoning_content", "")
             usage = response.get("usage", {})
             prompt_tokens = usage.get("prompt_tokens", "?")
             completion_tokens = usage.get("completion_tokens", "?")
             total_tokens = usage.get("total_tokens", "?")
 
-            # Calculate speed if we have token counts
+            # Calculate speed based on total tokens (includes thinking tokens)
             speed_str = ""
-            if isinstance(completion_tokens, (int, float)) and elapsed > 0:
-                speed = completion_tokens / elapsed
-                speed_str = f" (~{speed:.1f} t/s)"
+            if isinstance(total_tokens, (int, float)) and elapsed > 0:
+                speed = total_tokens / elapsed
+                speed_str = f" (~{speed:.1f} t/s total)"
 
             print(f"  [OK] Response ({elapsed:.1f}s{speed_str}):")
-            # Print first 300 chars of response, indented
+            if thinking_content:
+                print(f"     Thinking ({len(thinking_content)} chars):")
+                for line in thinking_content[:200].split("\n"):
+                    print(f"       {line}")
+                if len(thinking_content) > 200:
+                    print(f"       ... ({len(thinking_content)} chars total)")
             for line in content[:300].split("\n"):
                 print(f"     {line}")
             if len(content) > 300:
                 print(f"     ... ({len(content)} chars total)")
             print(f"     Tokens: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
+            if thinking_content:
+                print(f"     Thinking: present ({len(thinking_content)} chars)")
 
             results.append({
                 "model": model_id, "name": model_name,
@@ -188,6 +212,8 @@ def main():
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
+                "thinking_present": bool(thinking_content),
+                "thinking_chars": len(thinking_content) if thinking_content else 0,
                 "response_preview": content[:200],
             })
 
@@ -234,19 +260,21 @@ def main():
     print(f"\n{'=' * 64}")
     print("  Test Summary")
     print(f"{'=' * 64}")
-    print(f"  {'Model':<6} {'Name':<22} {'Status':<8} {'Time':>8} {'Tokens':>10}")
-    print(f"  {'─'*6} {'─'*22} {'─'*8} {'─'*8} {'─'*10}")
+    print(f"  {'Model':<6} {'Name':<22} {'Status':<8} {'Time':>8} {'Tokens':>10} {'Think':>7}")
+    print(f"  {'─'*6} {'─'*22} {'─'*8} {'─'*8} {'─'*10} {'─'*7}")
     for r in results:
         tokens = r.get("completion_tokens", "?")
         if tokens != "?" and r.get("prompt_tokens", "?") != "?":
             tokens = f"{r['completion_tokens']}/{r['total_tokens']}"
+        think = "✓" if r.get("thinking_present") else "✗"
         print(f"  {r['model']:<6} {r['name']:<22} {r['status']:<8} "
-              f"{r.get('elapsed_s', '?'):>7.1f}s {tokens:>10}")
+              f"{r.get('elapsed_s', '?'):>7.1f}s {tokens:>10} {think:>7}")
     print(f"{'=' * 64}")
 
     # Save results JSON
-    result_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "00.test_hello_results.json")
+    result_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+    os.makedirs(result_dir, exist_ok=True)
+    result_file = os.path.join(result_dir, "00.test_hello_results.json")
     with open(result_file, "w", encoding="utf-8") as f:
         json.dump({"timestamp": datetime.now().isoformat(), "results": results}, f, indent=2, ensure_ascii=False)
     print(f"\n  Results saved to: {result_file}")

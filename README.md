@@ -14,18 +14,18 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 **The primary model — fastest generation, stable at 256K context.**
 
-| Scenario | Config | Gen Speed | Prefill Speed | TTFT | MTP Hit Rate |
-|----------|--------|-----------|---------------|------|-------------|
-| Short prompt (cold) | `-c 262144 -b 4096 -ub 256 -t 8` | ~72 t/s | ~114 t/s | — | ~100% |
-| 128 tokens | `-c 262144 -b 4096 -ub 256 -t 8` | 73.1 t/s | 149.8 t/s | 0.86s | 71.8% |
-| 4K tokens | `-c 262144 -b 4096 -ub 256 -t 8` | 73.0 t/s | 374.4 t/s | 10.9s | 70.2% |
-| 32K tokens | `-c 262144 -b 4096 -ub 256 -t 8` | 68.0 t/s | 517.6 t/s | 63.3s | 71.7% |
-| 64K tokens | `-c 262144 -b 4096 -ub 256 -t 8` | 62.5 t/s | 447.4 t/s | 146.5s | 69.3% |
-| 256K long context | `-c 262144 -b 4096 -ub 256 -t 8` | 29.7 t/s | ~248 t/s | ~1010s | 71.1% |
+| Prompt Size | Gen Speed | Prefill Speed | TTFT |
+|-------------|-----------|---------------|------|
+| 128 tokens | 54.4 t/s | 340.2 t/s | 0.37s |
+| 4K tokens | 56.6 t/s | 391.3 t/s | 10.5s |
+| 32K tokens | 46.9 t/s | 520.1 t/s | 63.0s |
+| 64K tokens | 45.5 t/s | 448.1 t/s | 146.2s |
+| 128K tokens | 36.5 t/s | 344.6 t/s | 380.4s |
+| 256K tokens | 28.4 t/s | 238.2 t/s | 1015.0s |
 
-> MoE architecture activates only 3B of 35B parameters per token → minimal memory bandwidth consumption → fastest generation.
+> Config: `-c 262144 -b 4096 -ub 256 -t 8`, F16 KV cache, thinking enabled (`reasoning-budget=8192`). Gen speed includes thinking tokens (real usage). MoE activates only 3B of 35B params per token → fastest generation.
 >
-> **KV cache quantization (Q8_0) tested — no benefit on Vulkan:** Prefill degrades -3% to -21% as context grows (FA dequantization overhead dominates); Gen speed roughly equivalent (±3–5%); MTP unaffected. Conclusion: keep default F16 KV cache.
+> **KV cache quantization (Q8_0) tested — no benefit on Vulkan:** Prefill degrades -3% to -21% as context grows (FA dequantization overhead dominates); Gen speed roughly equivalent (±3–5%). Conclusion: keep default F16 KV cache.
 
 
 

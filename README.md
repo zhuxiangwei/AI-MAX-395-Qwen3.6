@@ -14,69 +14,20 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 **The primary model — fastest generation, stable at 256K context.**
 
-| Scenario | Config | Gen Speed | Prefill Speed | MTP Hit Rate |
-|----------|--------|-----------|---------------|-------------|
-| Short prompt (cold) | `-c 262144 -b 4096 -ub 256 -t 8` | ~72 t/s | ~114 t/s | ~100% |
-| 256K long context | `-c 262144 -b 4096 -ub 256 -t 8` | 28–31 t/s | 260–285 t/s | 54–73% |
+| Scenario | Config | Gen Speed | Prefill Speed | TTFT | MTP Hit Rate |
+|----------|--------|-----------|---------------|------|-------------|
+| Short prompt (cold) | `-c 262144 -b 4096 -ub 256 -t 8` | ~72 t/s | ~114 t/s | — | ~100% |
+| 128 tokens | `-c 262144 -b 4096 -ub 256 -t 8` | 73.1 t/s | 149.8 t/s | 0.86s | 71.8% |
+| 4K tokens | `-c 262144 -b 4096 -ub 256 -t 8` | 73.0 t/s | 374.4 t/s | 10.9s | 70.2% |
+| 32K tokens | `-c 262144 -b 4096 -ub 256 -t 8` | 68.0 t/s | 517.6 t/s | 63.3s | 71.7% |
+| 64K tokens | `-c 262144 -b 4096 -ub 256 -t 8` | 62.5 t/s | 447.4 t/s | 146.5s | 69.3% |
+| 256K long context | `-c 262144 -b 4096 -ub 256 -t 8` | 29.7 t/s | ~248 t/s | ~1010s | 71.1% |
 
 > MoE architecture activates only 3B of 35B parameters per token → minimal memory bandwidth consumption → fastest generation.
+>
+> **KV cache quantization (Q8_0) tested — no benefit on Vulkan:** Prefill degrades -3% to -21% as context grows (FA dequantization overhead dominates); Gen speed roughly equivalent (±3–5%); MTP unaffected. Conclusion: keep default F16 KV cache.
 
-### 27B Dense (All Quant Levels)
 
-**Short-prompt client speed (end-to-end, Router Mode, 2026-05-19):**
-
-| Quant | Alias | Gen Speed | MTP Hit Rate | Client Latency (512 tokens) |
-|-------|-------|-----------|-------------|--------------------------|
-| Q4_K_XL | `274` | ~21 t/s | ~80% | 30.3s |
-| Q6_K_XL | `276` | ~15 t/s | ~80% | 36.8s |
-| Q8_K_XL | `278` | ~11 t/s | ~68% | 54.3s |
-
-**Dense model speed scales linearly with model size** — memory bandwidth is the bottleneck (256 GB/s theoretical, ~200 GB/s practical). Smaller quant → smaller model → faster generation.
-
-| Quant | Model Size | Gen Speed | vs Q8 |
-|-------|-----------|-----------|-------|
-| Q8_K_XL | ~34 GB | 11.32 t/s | baseline |
-| Q6_K_XL | ~25 GB | 15.09 t/s | +33% |
-| Q4_K_XL | ~17 GB | 21.22 t/s | +87% |
-
-### 27B Q8 Context Boundary Test (2026-05-20, b=4096 ub=512 t=8)
-
-| ctx | Prompt Tokens | Prefill (t/s) | Gen (t/s) | MTP% | GTT Peak | Status |
-|-----|:---:|:---:|:---:|:---:|:---:|:---:|
-| 32K | 26,856 | 201.0 | 11.90 | 68.4% | 38.5 GB | ✅ Stable |
-| 64K | 53,962 | 85.7 | 11.01 | 66.8% | 40.7 GB | ✅ Stable |
-| 96K+ | — | — | — | — | — | ⚠️ Incomplete |
-
-> GTT grows linearly: ~2.2 GB per 32K context. Prefill degrades significantly with context length (Dense model KV cache growth). Gen speed is stable ~11 t/s (bandwidth-bound, context-independent).
-
-### 27B Q8 256K: ALL FAILED (2026-05-20)
-
-| ub | Result | Crash Point |
-|----|--------|------------|
-| 256 | Timeout 3600s | — |
-| 512 | Vulkan DeviceLostError | ~73K tokens (28.7%) |
-| 1024 | Vulkan DeviceLostError | ~36K tokens (14.4%) |
-| ≥2048 | Vulkan DeviceLostError | Earlier crash |
-
-> ⚠️ **27B Dense 256K is NOT viable.** Dense models activate all parameters — KV cache per token is much larger than MoE. 256K exceeds Vulkan driver capacity. Safe upper limit ≈ 64K–96K.
-
-### 256K Context: ub Is the Key Variable (35B-A3B MoE)
-
-`ub` (micro-batch size) controls VRAM peak per forward pass. It is the critical variable for 256K stability on MoE:
-
-| ub | 256K Stability | Prefill (t/s) | Gen (t/s) | MTP |
-|:--:|:--------------:|:-------------:|:---------:|:---:|
-| 256 | ✅ Stable | 260 | 31.3 | 73.1% |
-| 512 | ✅ Stable | 268 | 29.7 | 67.6% |
-| 1024 | ✅ Stable | 136 | 30.8 | 75.8% |
-| 2048+ | ❌ Vulkan crash | — | — | — |
-
-**Crash boundary:** ub=2048 crashes at ~155K tokens, ub=4096 at ~86K, ub=8192 at ~49K. Root cause: large ub causes VRAM peak exceeding Vulkan driver limits.
-
-**Per-quant ub strategy for 256K:**
-- Q8 → ub=256 (largest weights, least VRAM headroom)
-- Q6 → ub=512 (moderate headroom)
-- Q4 → ub=1024 (smallest weights, most headroom)
 
 ---
 
@@ -105,7 +56,7 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 | Max concurrent slots | 1 (`-np 1`) | **Mandatory** — MTP does not support multi-slot |
 | 35B MoE: max context | 256K (ub=256) | ub≥2048 causes Vulkan crash at 128K+ |
 | 27B Dense: max context | ~64K–96K | 256K NOT viable; Dense KV cache too large for Vulkan |
-| Avoid thinking mode | Don't enable `thinking=1` | Lowers MTP acceptance rate |
+| Thinking mode | Enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking tokens; no performance cost |
 | Avoid concurrency | 1 request at a time | Concurrent → 75% speed loss |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |

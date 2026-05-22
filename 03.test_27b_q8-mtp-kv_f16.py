@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""04.test_27b_q6-mtp-kv_f16.py — 27B Dense Q8 F16 KV full context benchmark.
+"""03.test_27b_q8-mtp-kv_f16.py — 27B Dense Q8 F16 KV full context benchmark.
 
 Tests 278 (27B Dense Q8) at p128/p4K/p32K/p64K/p128K/p256K.
 Restarts llama-server between each test point.
@@ -8,7 +8,7 @@ F16 KV cache only.
 Results written to CSV.
 
 Usage (on inference machine):
-    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 04.test_27b_q6-mtp-kv_f16.py
+    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 03.test_27b_q8-mtp-kv_f16.py
 """
 
 import subprocess
@@ -24,17 +24,17 @@ import signal
 # ── Configuration ──────────────────────────────────────────────
 _BASE_DIR = os.environ.get("LLM_BASE_DIR", "/home/user")
 LLAMA_SERVER = os.path.join(_BASE_DIR, "llama/llama.cpp/build/bin/llama-server")
-MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q6_K_XL.gguf")
+MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q8_K_XL.gguf")
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_bench_data.txt")
-CSV_FILE = os.path.join(_BASE_DIR, "test/bench_276_f16kv_small.csv")
+CSV_FILE = os.path.join(_BASE_DIR, "test/bench_278_full.csv")
 API_BASE = "http://127.0.0.1:12345"
 API_KEY = os.environ.get("LLM_API_KEY", "")
 
-ALIAS = "276"
+ALIAS = "278"
 
 CTX = 262144
 BATCH = 4096
-UBATCH = 512
+UBATCH = 256
 THREADS = 8
 REASONING_BUDGET = 8192
 
@@ -44,10 +44,13 @@ TEST_POINTS = [
     ("p128",   128),
     ("p4K",    4096),
     ("p32K",   32768),
+    ("p64K",   65536),
+    ("p128K",  131072),
+    ("p256K",  242000),
 ]
 
 SERVER_READY_TIMEOUT = 180  # seconds to wait for server startup
-REQUEST_TIMEOUT = 600      # max seconds per request
+REQUEST_TIMEOUT = 3600      # max seconds per request
 
 # ── Server Management ──────────────────────────────────────────
 server_pid = None
@@ -79,7 +82,7 @@ def start_server():
         "--timeout", "3600",
     ]
 
-    log_file = open(os.path.join(_BASE_DIR, "test/server_bench_f16kv.log"), "w")
+    log_file = open(os.path.join(_BASE_DIR, "test/server_bench.log"), "w")
     proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
     server_pid = proc.pid
     print(f"  [SERVER] Started PID={server_pid}, waiting for ready...")
@@ -260,7 +263,7 @@ def run_test(prompt, prompt_tokens_est):
 # ── Main ───────────────────────────────────────────────────────
 def main():
     print("=" * 64)
-    print("  27B Dense Q6 F16 KV — Small Context Benchmark")
+    print("  27B Dense Q8 F16 KV — Full Context Benchmark")
     print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 64)
 
@@ -342,7 +345,7 @@ def main():
             print(f"  {r.get('test','?'):<8} {str(pt):>8} {str(ct):>8} {ttft:>10} {pf:>10} {gf:>10} {el:>8}")
 
     print(f"\n  Results: {CSV_FILE}")
-    print(f"  Server log: {os.path.join(_BASE_DIR, 'test/server_bench_f16kv.log')}")
+    print(f"  Server log: {os.path.join(_BASE_DIR, 'test/server_bench.log')}")
 
 
 if __name__ == "__main__":

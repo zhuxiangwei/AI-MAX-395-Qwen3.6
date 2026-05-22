@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""05.test_27b_q6-mtp-kv_q8_0.py — 27B Dense Q8 with Q8_0 KV cache, small context comparison.
+"""04.test_27b_q8-mtp-kv_q8_0.py — 27B Dense Q8 Q8_0 KV small context benchmark.
 
 Quick comparison vs F16 KV to evaluate Q8_0 KV cache benefit on 27B Dense.
 Tests only p128/p4K/p32K (small context) for a fast probe.
 Restarts llama-server between each test point.
 
 Usage (on inference machine):
-    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 05.test_27b_q6-mtp-kv_q8_0.py
+    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u test_27b_q8_q8-mtp-kv_q8_0.py
 """
 
 import subprocess
@@ -22,17 +22,17 @@ import signal
 # ── Configuration ──────────────────────────────────────────────
 _BASE_DIR = os.environ.get("LLM_BASE_DIR", "/home/user")
 LLAMA_SERVER = os.path.join(_BASE_DIR, "llama/llama.cpp/build/bin/llama-server")
-MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q6_K_XL.gguf")
+MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q8_K_XL.gguf")
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_bench_data.txt")
-CSV_FILE = os.path.join(_BASE_DIR, "test/bench_276_q8kv_small.csv")
+CSV_FILE = os.path.join(_BASE_DIR, "test/bench_278_q8kv_small.csv")
 API_BASE = "http://127.0.0.1:12345"
 API_KEY = os.environ.get("LLM_API_KEY", "")
 
-ALIAS = "276"
+ALIAS = "278"
 
 CTX = 262144
 BATCH = 4096
-UBATCH = 512
+UBATCH = 256
 THREADS = 8
 REASONING_BUDGET = 8192
 
@@ -44,13 +44,11 @@ CHARS_PER_TOKEN = 3.6  # Qwen3.6 tokenizer ratio
 
 # 256K stress test
 TEST_POINTS = [
-    ("p128",   128),
-    ("p4K",    4096),
-    ("p32K",   32768),
+    ("p256K",  262144),
 ]
 
 SERVER_READY_TIMEOUT = 180  # seconds to wait for server startup
-REQUEST_TIMEOUT = 600      # max seconds per request (256K prefill ~60min+)
+REQUEST_TIMEOUT = 7200      # max seconds per request (256K prefill ~60min+)
 
 # ── Server Management ──────────────────────────────────────────
 server_pid = None
@@ -257,7 +255,7 @@ def run_test(prompt, prompt_tokens_est):
 # ── Main ───────────────────────────────────────────────────────
 def main():
     print("=" * 64)
-    print("  27B Dense Q6 Q8_0 KV — Small Context Benchmark")
+    print("  27B Dense Q8 + Q8_0 KV Cache — Small Context Probe")
     print(f"  KV: {CACHE_TYPE_K}/{CACHE_TYPE_V}")
     print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 64)

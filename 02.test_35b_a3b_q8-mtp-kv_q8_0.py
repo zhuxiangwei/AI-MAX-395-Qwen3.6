@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""test_27b_q8_q8-mtp-kv_q8_0.py — 27B Dense Q8 with Q8_0 KV cache, small context comparison.
+"""02.test_35b_a3b_q8-mtp-kv_q8_0.py — 35B MoE Q8_0 KV small context benchmark.
 
-Quick comparison vs F16 KV to evaluate Q8_0 KV cache benefit on 27B Dense.
-Tests only p128/p4K/p32K (small context) for a fast probe.
+Tests 358 (35B-A3B Q8 MoE) at p128/p4K/p32K/p64K/p128K/p256K.
 Restarts llama-server between each test point.
+No max_tokens limit — model generates freely.
+Q8_0 KV cache only.
+Results written to CSV.
 
 Usage (on inference machine):
-    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u test_27b_q8_q8-mtp-kv_q8_0.py
+    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 02.test_35b_a3b_q8-mtp-kv_q8_0.py
 """
 
 import subprocess
@@ -22,13 +24,11 @@ import signal
 # ── Configuration ──────────────────────────────────────────────
 _BASE_DIR = os.environ.get("LLM_BASE_DIR", "/home/user")
 LLAMA_SERVER = os.path.join(_BASE_DIR, "llama/llama.cpp/build/bin/llama-server")
-MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q8_K_XL.gguf")
+MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf")
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_bench_data.txt")
-CSV_FILE = os.path.join(_BASE_DIR, "test/bench_278_q8kv_small.csv")
+CSV_FILE = os.path.join(_BASE_DIR, "test/bench_358_q8kv_small.csv")
 API_BASE = "http://127.0.0.1:12345"
 API_KEY = os.environ.get("LLM_API_KEY", "")
-
-ALIAS = "278"
 
 CTX = 262144
 BATCH = 4096
@@ -36,25 +36,26 @@ UBATCH = 256
 THREADS = 8
 REASONING_BUDGET = 8192
 
-# Q8_0 KV cache type
+# Q8_0 KV cache
 CACHE_TYPE_K = "q8_0"
 CACHE_TYPE_V = "q8_0"
 
 CHARS_PER_TOKEN = 3.6  # Qwen3.6 tokenizer ratio
 
-# 256K stress test
 TEST_POINTS = [
-    ("p256K",  262144),
+    ("p128",   128),
+    ("p4K",    4096),
+    ("p32K",   32768),
 ]
 
 SERVER_READY_TIMEOUT = 180  # seconds to wait for server startup
-REQUEST_TIMEOUT = 7200      # max seconds per request (256K prefill ~60min+)
+REQUEST_TIMEOUT = 600       # max seconds per request
 
 # ── Server Management ──────────────────────────────────────────
 server_pid = None
 
 def start_server():
-    """Start llama-server with Q8_0 KV cache, return PID."""
+    """Start llama-server with F16 KV cache, return PID."""
     global server_pid
     stop_server()  # ensure clean state
 
@@ -78,7 +79,7 @@ def start_server():
         "--host", "127.0.0.1",
         "--port", "12345",
         "--api-key", API_KEY,
-        "--alias", ALIAS,
+        "--alias", "358",
         "--timeout", "3600",
     ]
 
@@ -114,13 +115,15 @@ def stop_server():
         subprocess.run(["pkill", "-f", "llama-server"], capture_output=True, timeout=10)
     except Exception:
         pass
+    # Also kill by PID if we have it
     if server_pid:
         try:
             os.kill(server_pid, signal.SIGTERM)
         except Exception:
             pass
     server_pid = None
-    time.sleep(2)
+    time.sleep(2)  # wait for port to free
+    # Verify port is free
     try:
         subprocess.run(["fuser", "12345/tcp"], capture_output=True, timeout=5)
     except Exception:
@@ -130,7 +133,7 @@ def stop_server():
 
 # ── Benchmark ──────────────────────────────────────────────────
 def load_prompt_data():
-    """Load test_bench_data.txt."""
+    """Load ffmpeg_filters_text.txt."""
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -152,7 +155,7 @@ def make_prompt(text, target_tokens):
 def run_test(prompt, prompt_tokens_est):
     """Send chat completion request, parse SSE stream, return metrics."""
     payload = json.dumps({
-        "model": ALIAS,
+        "model": "358",
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
         "thinking": {"type": "enabled", "budget_tokens": 1024},
@@ -206,15 +209,18 @@ def run_test(prompt, prompt_tokens_est):
 
                     delta = choices[0].get("delta", {})
 
+                    # Track first token (could be reasoning or content)
                     if first_token_time is None:
                         if delta.get("reasoning_content") or delta.get("content"):
                             first_token_time = time.time()
 
+                    # Count tokens by tracking non-empty deltas
                     if delta.get("reasoning_content"):
                         reasoning_tokens += 1
                     if delta.get("content"):
                         content_tokens += 1
 
+                    # Check usage in the final chunk
                     usage = data.get("usage")
                     if usage:
                         prompt_tokens_actual = usage.get("prompt_tokens", 0)
@@ -230,6 +236,7 @@ def run_test(prompt, prompt_tokens_est):
     elapsed = time.time() - t0
     ttft = (first_token_time - t0) if first_token_time else None
 
+    # Calculate speeds using actual usage data if available
     total_completion = completion_tokens_actual if completion_tokens_actual else (reasoning_tokens + content_tokens)
 
     result = {
@@ -239,11 +246,13 @@ def run_test(prompt, prompt_tokens_est):
         "ttft_s": round(ttft, 3) if ttft else None,
     }
 
+    # Prefill speed
     if ttft and prompt_tokens_actual:
         result["prefill_tps"] = round(prompt_tokens_actual / ttft, 1)
     elif ttft and prompt_tokens_est:
         result["prefill_tps"] = round(prompt_tokens_est / ttft, 1)
 
+    # Generation speed (from first token to end)
     if ttft and total_completion > 0:
         gen_time = elapsed - ttft
         if gen_time > 0:
@@ -255,8 +264,7 @@ def run_test(prompt, prompt_tokens_est):
 # ── Main ───────────────────────────────────────────────────────
 def main():
     print("=" * 64)
-    print("  27B Dense Q8 + Q8_0 KV Cache — Small Context Probe")
-    print(f"  KV: {CACHE_TYPE_K}/{CACHE_TYPE_V}")
+    print("  35B MoE Q8_0 KV — Small Context Benchmark")
     print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 64)
 
@@ -292,7 +300,7 @@ def main():
         print(f"  Prompt: {len(prompt)} chars, ~{est_tokens} tokens estimated")
 
         # Step 3: Run test
-        print(f"  Running test (streaming)...")
+        print(f"  Running test (no max_tokens limit, streaming)...")
         result = run_test(prompt, est_tokens)
         result["test"] = name
         results.append(result)
@@ -342,6 +350,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Validate required env vars
     if not API_KEY:
         print("ERROR: LLM_API_KEY environment variable not set. Aborting.")
         sys.exit(1)

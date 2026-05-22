@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""01.test_35b_a3b_q8-mtp-kv_f16.py — 35B MoE F16 KV full context benchmark.
+"""05.test_27b_q6-mtp-kv_f16.py — 27B Dense Q6 F16 KV small context benchmark.
 
-Tests 358 (35B-A3B Q8 MoE) at p128/p4K/p32K/p64K/p128K/p256K.
+Tests 278 (27B Dense Q8) at p128/p4K/p32K/p64K/p128K/p256K.
 Restarts llama-server between each test point.
 No max_tokens limit — model generates freely.
 F16 KV cache only.
 Results written to CSV.
 
 Usage (on inference machine):
-    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 01.test_35b_a3b_q8-mtp-kv_f16.py
+    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 04.test_27b_q6-mtp-kv_f16.py
 """
 
 import subprocess
@@ -24,15 +24,17 @@ import signal
 # ── Configuration ──────────────────────────────────────────────
 _BASE_DIR = os.environ.get("LLM_BASE_DIR", "/home/user")
 LLAMA_SERVER = os.path.join(_BASE_DIR, "llama/llama.cpp/build/bin/llama-server")
-MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf")
+MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q6_K_XL.gguf")
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_bench_data.txt")
-CSV_FILE = os.path.join(_BASE_DIR, "test/bench_358_full.csv")
+CSV_FILE = os.path.join(_BASE_DIR, "test/bench_276_f16kv_small.csv")
 API_BASE = "http://127.0.0.1:12345"
 API_KEY = os.environ.get("LLM_API_KEY", "")
 
+ALIAS = "276"
+
 CTX = 262144
 BATCH = 4096
-UBATCH = 256
+UBATCH = 512
 THREADS = 8
 REASONING_BUDGET = 8192
 
@@ -42,13 +44,10 @@ TEST_POINTS = [
     ("p128",   128),
     ("p4K",    4096),
     ("p32K",   32768),
-    ("p64K",   65536),
-    ("p128K",  131072),
-    ("p256K",  242000),
 ]
 
 SERVER_READY_TIMEOUT = 180  # seconds to wait for server startup
-REQUEST_TIMEOUT = 3600      # max seconds per request (256K prefill ~17min)
+REQUEST_TIMEOUT = 600      # max seconds per request
 
 # ── Server Management ──────────────────────────────────────────
 server_pid = None
@@ -76,11 +75,11 @@ def start_server():
         "--host", "127.0.0.1",
         "--port", "12345",
         "--api-key", API_KEY,
-        "--alias", "358",
+        "--alias", ALIAS,
         "--timeout", "3600",
     ]
 
-    log_file = open(os.path.join(_BASE_DIR, "test/server_bench.log"), "w")
+    log_file = open(os.path.join(_BASE_DIR, "test/server_bench_f16kv.log"), "w")
     proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
     server_pid = proc.pid
     print(f"  [SERVER] Started PID={server_pid}, waiting for ready...")
@@ -130,7 +129,7 @@ def stop_server():
 
 # ── Benchmark ──────────────────────────────────────────────────
 def load_prompt_data():
-    """Load ffmpeg_filters_text.txt."""
+    """Load test data file."""
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -152,7 +151,7 @@ def make_prompt(text, target_tokens):
 def run_test(prompt, prompt_tokens_est):
     """Send chat completion request, parse SSE stream, return metrics."""
     payload = json.dumps({
-        "model": "358",
+        "model": ALIAS,
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
         "thinking": {"type": "enabled", "budget_tokens": 1024},
@@ -261,7 +260,7 @@ def run_test(prompt, prompt_tokens_est):
 # ── Main ───────────────────────────────────────────────────────
 def main():
     print("=" * 64)
-    print("  35B MoE F16 KV — Full Context Benchmark")
+    print("  27B Dense Q6 F16 KV — Small Context Benchmark")
     print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 64)
 
@@ -343,7 +342,7 @@ def main():
             print(f"  {r.get('test','?'):<8} {str(pt):>8} {str(ct):>8} {ttft:>10} {pf:>10} {gf:>10} {el:>8}")
 
     print(f"\n  Results: {CSV_FILE}")
-    print(f"  Server log: {os.path.join(_BASE_DIR, 'test/server_bench.log')}")
+    print(f"  Server log: {os.path.join(_BASE_DIR, 'test/server_bench_f16kv.log')}")
 
 
 if __name__ == "__main__":

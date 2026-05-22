@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""02.test_27b_q8_bench.py — 27B Dense Q8 F16 KV full context benchmark.
+"""06.test_27b_q6-mtp-kv_q8_0.py — 27B Dense Q6 Q8_0 KV small context benchmark.
 
-Tests 278 (27B Dense Q8) at p128/p4K/p32K/p64K/p128K/p256K.
+Quick comparison vs F16 KV to evaluate Q8_0 KV cache benefit on 27B Dense.
+Tests only p128/p4K/p32K (small context) for a fast probe.
 Restarts llama-server between each test point.
-No max_tokens limit — model generates freely.
-F16 KV cache only.
-Results written to CSV.
 
 Usage (on inference machine):
-    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 02.test_27b_q8_bench.py
+    LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 05.test_27b_q6-mtp-kv_q8_0.py
 """
 
 import subprocess
@@ -24,39 +22,41 @@ import signal
 # ── Configuration ──────────────────────────────────────────────
 _BASE_DIR = os.environ.get("LLM_BASE_DIR", "/home/user")
 LLAMA_SERVER = os.path.join(_BASE_DIR, "llama/llama.cpp/build/bin/llama-server")
-MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q8_K_XL.gguf")
+MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q6_K_XL.gguf")
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_bench_data.txt")
-CSV_FILE = os.path.join(_BASE_DIR, "test/bench_278_full.csv")
+CSV_FILE = os.path.join(_BASE_DIR, "test/bench_276_q8kv_small.csv")
 API_BASE = "http://127.0.0.1:12345"
 API_KEY = os.environ.get("LLM_API_KEY", "")
 
-ALIAS = "278"
+ALIAS = "276"
 
 CTX = 262144
 BATCH = 4096
-UBATCH = 256
+UBATCH = 512
 THREADS = 8
 REASONING_BUDGET = 8192
 
+# Q8_0 KV cache type
+CACHE_TYPE_K = "q8_0"
+CACHE_TYPE_V = "q8_0"
+
 CHARS_PER_TOKEN = 3.6  # Qwen3.6 tokenizer ratio
 
+# 256K stress test
 TEST_POINTS = [
     ("p128",   128),
     ("p4K",    4096),
     ("p32K",   32768),
-    ("p64K",   65536),
-    ("p128K",  131072),
-    ("p256K",  242000),
 ]
 
 SERVER_READY_TIMEOUT = 180  # seconds to wait for server startup
-REQUEST_TIMEOUT = 3600      # max seconds per request
+REQUEST_TIMEOUT = 600      # max seconds per request (256K prefill ~60min+)
 
 # ── Server Management ──────────────────────────────────────────
 server_pid = None
 
 def start_server():
-    """Start llama-server with F16 KV cache, return PID."""
+    """Start llama-server with Q8_0 KV cache, return PID."""
     global server_pid
     stop_server()  # ensure clean state
 
@@ -75,6 +75,8 @@ def start_server():
         "--mlock",
         "--numa", "distribute",
         "--reasoning-budget", str(REASONING_BUDGET),
+        "--cache-type-k", CACHE_TYPE_K,
+        "--cache-type-v", CACHE_TYPE_V,
         "--host", "127.0.0.1",
         "--port", "12345",
         "--api-key", API_KEY,
@@ -82,10 +84,10 @@ def start_server():
         "--timeout", "3600",
     ]
 
-    log_file = open(os.path.join(_BASE_DIR, "test/server_bench.log"), "w")
+    log_file = open(os.path.join(_BASE_DIR, "test/server_bench_q8kv.log"), "w")
     proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
     server_pid = proc.pid
-    print(f"  [SERVER] Started PID={server_pid}, waiting for ready...")
+    print(f"  [SERVER] Started PID={server_pid}, KV={CACHE_TYPE_K}/{CACHE_TYPE_V}, waiting for ready...")
 
     # Wait for server to be ready
     t0 = time.time()
@@ -114,15 +116,13 @@ def stop_server():
         subprocess.run(["pkill", "-f", "llama-server"], capture_output=True, timeout=10)
     except Exception:
         pass
-    # Also kill by PID if we have it
     if server_pid:
         try:
             os.kill(server_pid, signal.SIGTERM)
         except Exception:
             pass
     server_pid = None
-    time.sleep(2)  # wait for port to free
-    # Verify port is free
+    time.sleep(2)
     try:
         subprocess.run(["fuser", "12345/tcp"], capture_output=True, timeout=5)
     except Exception:
@@ -132,7 +132,7 @@ def stop_server():
 
 # ── Benchmark ──────────────────────────────────────────────────
 def load_prompt_data():
-    """Load test data file."""
+    """Load test_bench_data.txt."""
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -208,18 +208,15 @@ def run_test(prompt, prompt_tokens_est):
 
                     delta = choices[0].get("delta", {})
 
-                    # Track first token (could be reasoning or content)
                     if first_token_time is None:
                         if delta.get("reasoning_content") or delta.get("content"):
                             first_token_time = time.time()
 
-                    # Count tokens by tracking non-empty deltas
                     if delta.get("reasoning_content"):
                         reasoning_tokens += 1
                     if delta.get("content"):
                         content_tokens += 1
 
-                    # Check usage in the final chunk
                     usage = data.get("usage")
                     if usage:
                         prompt_tokens_actual = usage.get("prompt_tokens", 0)
@@ -235,7 +232,6 @@ def run_test(prompt, prompt_tokens_est):
     elapsed = time.time() - t0
     ttft = (first_token_time - t0) if first_token_time else None
 
-    # Calculate speeds using actual usage data if available
     total_completion = completion_tokens_actual if completion_tokens_actual else (reasoning_tokens + content_tokens)
 
     result = {
@@ -245,13 +241,11 @@ def run_test(prompt, prompt_tokens_est):
         "ttft_s": round(ttft, 3) if ttft else None,
     }
 
-    # Prefill speed
     if ttft and prompt_tokens_actual:
         result["prefill_tps"] = round(prompt_tokens_actual / ttft, 1)
     elif ttft and prompt_tokens_est:
         result["prefill_tps"] = round(prompt_tokens_est / ttft, 1)
 
-    # Generation speed (from first token to end)
     if ttft and total_completion > 0:
         gen_time = elapsed - ttft
         if gen_time > 0:
@@ -263,7 +257,8 @@ def run_test(prompt, prompt_tokens_est):
 # ── Main ───────────────────────────────────────────────────────
 def main():
     print("=" * 64)
-    print("  27B Dense Q8 F16 KV — Full Context Benchmark")
+    print("  27B Dense Q6 Q8_0 KV — Small Context Benchmark")
+    print(f"  KV: {CACHE_TYPE_K}/{CACHE_TYPE_V}")
     print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 64)
 
@@ -299,7 +294,7 @@ def main():
         print(f"  Prompt: {len(prompt)} chars, ~{est_tokens} tokens estimated")
 
         # Step 3: Run test
-        print(f"  Running test (no max_tokens limit, streaming)...")
+        print(f"  Running test (streaming)...")
         result = run_test(prompt, est_tokens)
         result["test"] = name
         results.append(result)
@@ -345,11 +340,10 @@ def main():
             print(f"  {r.get('test','?'):<8} {str(pt):>8} {str(ct):>8} {ttft:>10} {pf:>10} {gf:>10} {el:>8}")
 
     print(f"\n  Results: {CSV_FILE}")
-    print(f"  Server log: {os.path.join(_BASE_DIR, 'test/server_bench.log')}")
+    print(f"  Server log: {os.path.join(_BASE_DIR, 'test/server_bench_q8kv.log')}")
 
 
 if __name__ == "__main__":
-    # Validate required env vars
     if not API_KEY:
         print("ERROR: LLM_API_KEY environment variable not set. Aborting.")
         sys.exit(1)

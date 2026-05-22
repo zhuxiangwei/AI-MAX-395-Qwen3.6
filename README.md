@@ -25,8 +25,7 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 > Config: `-c 262144 -b 4096 -ub 256 -t 8`, F16 KV cache, thinking enabled (`reasoning-budget=8192`). Gen speed includes thinking tokens (real usage). MoE activates only 3B of 35B params per token → fastest generation.
 
-<details>
-<summary><b>Q8_0 KV Cache + UB Sweep Results</b></summary>
+#### Q8_0 KV Cache + UB Sweep
 
 Q8_0 KV cache tested across 4 UB values (512–4096), compared against F16 KV UB=256 baseline.
 
@@ -60,11 +59,9 @@ Q8_0 KV cache tested across 4 UB values (512–4096), compared against F16 KV UB
 4. **Even the best Q8_0 config (ub=1024) loses to F16 ub=256 at p64K+** — prefill -2~13%, gen -7~9%
 5. **Conclusion: F16 KV UB=256 remains optimal for 35B MoE.** Vulkan FA dequantization overhead exceeds the bandwidth savings from Q8_0 compression; MoE's sparse KV cache (3B active params) means limited bandwidth to save. Q8_0 KV only benefits short-context prefill (≤32K); at 256K context even UB=512 (the only viable Q8_0 config) is still 30% slower than F16 KV UB=256.
 
-</details>
+### 27B Dense Q8 (Q8_K_XL, alias `278`)
 
-
-
-### 27B Dense Q8 (Q8_K_XL, removed) — Not Recommended
+Dense architecture — all 27B params active per token. Gen speed slower than Q6/Q4, but Q8_0 KV cache unlocks 256K context and dramatically improves long-context prefill.
 
 **F16 KV cache (ub=256):**
 
@@ -75,10 +72,11 @@ Q8_0 KV cache tested across 4 UB values (512–4096), compared against F16 KV UB
 | 32K tokens | 11.7 t/s | 174.6 t/s | 187.7s |
 | 64K tokens | 11.7 t/s | 110.0 t/s | 595.6s |
 | 128K tokens | 10.0 t/s | 49.8 t/s | 2633.1s |
-| 256K tokens | — | — | ❌ timeout 7200s |
+| 256K tokens | — | — | ❌ timeout (7200s) |
 
-<details>
-<summary><b>Q8_0 KV Cache + UB Sweep Results</b></summary>
+> Config: `-c 262144 -b 4096 -ub 256 -t 8`, F16 KV cache, thinking enabled. F16 KV at 256K context exceeds 7200s timeout — model never reaches first token.
+
+#### Q8_0 KV Cache + UB Sweep
 
 Q8_0 KV cache tested across 4 UB values (256–4096), compared against F16 KV UB=256 baseline. UB≥2048 crashes at 128K+ context.
 
@@ -131,9 +129,7 @@ Q8_0 KV cache tested across 4 UB values (256–4096), compared against F16 KV UB
 5. **UB≥2048 Vulkan crash** — UB=2048 p256K crash, UB=4096 p128K crash; 27B Dense has tighter VRAM headroom than 35B MoE
 6. **UB=512 p256K total time 33 min vs UB=256's 53 min** — saves 20 minutes per 256K request
 
-</details>
 
-> **Removed from active roster.** Gen speed only 7–13 t/s (vs Q6 ~17 t/s, Q4 ~21 t/s). Q8_0 KV enables 256K context and massively improves long-context prefill, but gen is still slow. Use Q6 or Q4 instead.
 
 ---
 
@@ -195,6 +191,21 @@ batch-size = 4096
 ubatch-size = 256
 threads = 8
 alias = 358
+
+[Qwen3.6-27B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 256
+threads = 8
+alias = 278
 
 [Qwen3.6-27B-UD-Q6_K_XL]
 n-gpu-layers = 99
@@ -293,11 +304,12 @@ alias = 274
 
 ### Model Inventory
 
-Router Mode serves all models from `$HOME/model/`. Only one is loaded at a time (`--models-max 1`), switching via LRU on client request. Each model has an **alias** for short-name routing. 27B Q8 is currently removed from the active roster due to poor usability (slow generation, long prefill at extended contexts).
+Router Mode serves all models from `$HOME/model/`. Only one is loaded at a time (`--models-max 1`), switching via LRU on client request. Each model has an **alias** for short-name routing.
 
 | Model | File | Alias | Quant | Arch | Size | Active Params |
 |-------|------|-------|-------|------|------|---------------|
 | Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | Q8_K_XL | **MoE** | ~37 GB | 3B |
+| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | Q8_K_XL | Dense | ~33 GB | 27B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | Q6_K_XL | Dense | ~25 GB | 27B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | Q4_K_XL | Dense | ~17 GB | 27B |
 
@@ -497,6 +509,7 @@ curl https://{your_domain}/v1/chat/completions \
 | Command | Model |
 |---------|-------|
 | `/model 358` | 35B-A3B Q8 (MoE, fastest) |
+| `/model 278` | 27B Q8 (Dense, highest accuracy) |
 | `/model 276` | 27B Q6 (Dense, balanced) |
 | `/model 274` | 27B Q4 (Dense, most economical) |
 
@@ -510,7 +523,7 @@ curl https://{your_domain}/v1/chat/completions \
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
 - [ ] `~/model/router-preset.ini` configured with model-level params + aliases
-- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns 3 models with aliases
+- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns 4 models with aliases
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
 - [ ] Alias routing: `curl -d '{"model":"358",...}'` routes to 35B-A3B Q8
 

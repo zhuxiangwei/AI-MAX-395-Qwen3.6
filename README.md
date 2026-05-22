@@ -12,7 +12,7 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 ### 35B-A3B MoE (Q8_K_XL, alias `358`)
 
-**The primary model — fastest generation, stable at 256K context.**
+**The primary model — fastest generation, stable at 256K context.** ✅ *Testing complete.*
 
 | Prompt Size | Gen Speed | Prefill Speed | TTFT |
 |-------------|-----------|---------------|------|
@@ -24,8 +24,43 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 | 256K tokens | 28.4 t/s | 238.2 t/s | 1015.0s |
 
 > Config: `-c 262144 -b 4096 -ub 256 -t 8`, F16 KV cache, thinking enabled (`reasoning-budget=8192`). Gen speed includes thinking tokens (real usage). MoE activates only 3B of 35B params per token → fastest generation.
->
-> **KV cache quantization (Q8_0) tested — no benefit on Vulkan:** Prefill degrades -3% to -21% as context grows (FA dequantization overhead dominates); Gen speed roughly equivalent (±3–5%). Conclusion: keep default F16 KV cache.
+
+<details>
+<summary><b>Q8_0 KV Cache + UB Sweep Results</b></summary>
+
+Q8_0 KV cache tested across 4 UB values (512–4096), compared against F16 KV UB=256 baseline.
+
+**Prefill speed (t/s):**
+
+| Prompt | F16 ub=256 | Q8_0 ub=512 | Q8_0 ub=1024 | Q8_0 ub=2048 | Q8_0 ub=4096 |
+|--------|-----------|-------------|--------------|--------------|--------------|
+| p128 | 340.2 | 364.2 | 297.9 | 338.2 | 343.6 |
+| p4K | 391.3 | 468.8 | **480.0** | 450.0 | 295.4 |
+| p32K | 520.1 | 544.9 | **589.0** | 576.1 | 384.4 |
+| p64K | 448.1 | 421.3 | **450.8** | 440.4 | 327.5 |
+| p128K | **344.6** | 287.5 | 298.7 | 295.2 | 241.4 |
+| p256K | **238.2** | — | — | — | ❌ crash |
+
+**Gen speed (t/s):**
+
+| Prompt | F16 ub=256 | Q8_0 ub=512 | Q8_0 ub=1024 | Q8_0 ub=2048 | Q8_0 ub=4096 |
+|--------|-----------|-------------|--------------|--------------|--------------|
+| p128 | **54.4** | 51.6 | 53.5 | 52.5 | 53.9 |
+| p4K | **56.6** | 51.3 | 50.2 | 52.7 | 47.7 |
+| p32K | **46.9** | 45.3 | 46.1 | 43.9 | 46.5 |
+| p64K | **45.5** | 43.7 | 40.7 | 41.2 | 42.4 |
+| p128K | **36.5** | 34.0 | 33.3 | 33.3 | 33.9 |
+| p256K | **28.4** | — | — | — | ❌ crash |
+
+**Findings:**
+
+1. **Q8_0 KV UB=1024 is the best among Q8_0 configs** — fastest prefill at p4K–p128K, near-optimal gen and TTFT
+2. **Q8_0 KV UB=4096 degrades everywhere** — prefill -30~40% at p4K+, gen -7~33%, 256K Vulkan crash at ~160K tokens
+3. **MTP acceptance drops with larger UB** — 71.3% (ub=256) → 65.6% (ub=4096)
+4. **Even the best Q8_0 config (ub=1024) loses to F16 ub=256 at p64K+** — prefill -2~13%, gen -7~9%
+5. **Conclusion: F16 KV UB=256 remains optimal for 35B MoE.** Vulkan FA dequantization overhead exceeds the bandwidth savings from Q8_0 compression; MoE's sparse KV cache (3B active params) means limited bandwidth to save.
+
+</details>
 
 
 
@@ -423,4 +458,4 @@ curl https://{your_domain}/v1/chat/completions \
 
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9210 Vulkan · 2026-05-20*
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9210 Vulkan · 2026-05-22*

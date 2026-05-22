@@ -55,7 +55,7 @@
 |------|---|------|
 | 最大并发槽位 | 1 (`-np 1`) | **强制** — MTP 不支持多 slot |
 | 35B MoE 最大上下文 | 256K (ub=256) | ub≥2048 在 128K+ 时 Vulkan 崩溃 |
-| 27B Dense 最大上下文 | ~64K–96K | 256K 不可行；Dense KV cache 太大，Vulkan 崩溃 |
+| 27B Dense 最大上下文 | ~64K–96K | 256K F16 KV 不可行；Dense KV cache 太大，Vulkan 崩溃 |
 | Thinking 模式 | 已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；无性能损失 |
 | 避免并发 | 一次一个请求 | 并发 → 速度损失 75% |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
@@ -89,21 +89,6 @@ batch-size = 4096
 ubatch-size = 256
 threads = 8
 alias = 358
-
-[Qwen3.6-27B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 1
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 256
-threads = 8
-alias = 278
 
 [Qwen3.6-27B-UD-Q6_K_XL]
 n-gpu-layers = 99
@@ -202,16 +187,15 @@ alias = 274
 
 ### 模型清单
 
-Router Mode 从 `$HOME/model/` 提供所有模型服务。一次只加载一个模型（`--models-max 1`），通过 LRU 按需切换。每个模型配置了 **alias 别名** 便于 API 路由。
+Router Mode 从 `$HOME/model/` 提供所有模型服务。一次只加载一个模型（`--models-max 1`），通过 LRU 按需切换。每个模型配置了 **alias 别名** 便于 API 路由。27B Q8 因可用性差（生成慢、长上下文 prefill 耗时过长）已从活跃名单中移除。
 
 | 模型 | 文件名 | 别名 | 量化 | 架构 | 大小 | 激活参数 |
 |------|--------|------|------|------|------|---------|
 | Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | Q8_K_XL | **MoE** | ~37 GB | 3B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | Q8_K_XL | Dense | ~34 GB | 27B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | Q6_K_XL | Dense | ~25 GB | 27B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | Q4_K_XL | Dense | ~17 GB | 27B |
 
-> **别名命名规则：** 3 位数字 = 模型大小 + 量化等级。如 `358` = 35B Q8，`274` = 27B Q4。API 请求的 `model` 字段使用别名或完整文件名均可。
+> **别名命名规则：** 3 位数字 = 模型大小 + 量化等级。如 `358` = 35B Q8，`276` = 27B Q6，`274` = 27B Q4。API 请求的 `model` 字段使用别名或完整文件名均可。
 
 ### 1. 云端 Nginx 配置
 
@@ -405,7 +389,6 @@ curl https://{your_domain}/v1/chat/completions \
 | 命令 | 模型 |
 |------|------|
 | `/model 358` | 35B-A3B Q8 (MoE, 最快) |
-| `/model 278` | 27B Q8 (Dense, 最高质量) |
 | `/model 276` | 27B Q6 (Dense, 平衡) |
 | `/model 274` | 27B Q4 (Dense, 最省资源) |
 
@@ -419,7 +402,7 @@ curl https://{your_domain}/v1/chat/completions \
 - [ ] 云端 `ss -tlnp | grep 8080` 确认隧道监听
 - [ ] `llm-router.service` 已创建并 **运行中**（仅服务级参数）
 - [ ] `~/model/router-preset.ini` 配置正确（模型级参数 + alias）
-- [ ] 云端：`curl http://127.0.0.1:8080/v1/models` 返回 4 个模型 + aliases
+- [ ] 云端：`curl http://127.0.0.1:8080/v1/models` 返回 3 个模型 + aliases
 - [ ] 外网：`curl https://{your_domain}/health` 返回 `OK`
 - [ ] 别名路由：`curl -d '{"model":"358",...}'` 路由到 35B-A3B Q8
 

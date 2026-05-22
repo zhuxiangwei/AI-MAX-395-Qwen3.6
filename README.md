@@ -55,7 +55,7 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 |-----------|-------|--------|
 | Max concurrent slots | 1 (`-np 1`) | **Mandatory** — MTP does not support multi-slot |
 | 35B MoE: max context | 256K (ub=256) | ub≥2048 causes Vulkan crash at 128K+ |
-| 27B Dense: max context | ~64K–96K | 256K NOT viable; Dense KV cache too large for Vulkan |
+| 27B Dense: max context | ~64K–96K | 256K NOT viable with F16 KV; Dense KV cache too large for Vulkan |
 | Thinking mode | Enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking tokens; no performance cost |
 | Avoid concurrency | 1 request at a time | Concurrent → 75% speed loss |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
@@ -89,21 +89,6 @@ batch-size = 4096
 ubatch-size = 256
 threads = 8
 alias = 358
-
-[Qwen3.6-27B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 1
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 256
-threads = 8
-alias = 278
 
 [Qwen3.6-27B-UD-Q6_K_XL]
 n-gpu-layers = 99
@@ -202,16 +187,15 @@ alias = 274
 
 ### Model Inventory
 
-Router Mode serves all models from `$HOME/model/`. Only one is loaded at a time (`--models-max 1`), switching via LRU on client request. Each model has an **alias** for short-name routing.
+Router Mode serves all models from `$HOME/model/`. Only one is loaded at a time (`--models-max 1`), switching via LRU on client request. Each model has an **alias** for short-name routing. 27B Q8 is currently removed from the active roster due to poor usability (slow generation, long prefill at extended contexts).
 
 | Model | File | Alias | Quant | Arch | Size | Active Params |
 |-------|------|-------|-------|------|------|---------------|
 | Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | Q8_K_XL | **MoE** | ~37 GB | 3B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | Q8_K_XL | Dense | ~34 GB | 27B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | Q6_K_XL | Dense | ~25 GB | 27B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | Q4_K_XL | Dense | ~17 GB | 27B |
 
-> **Alias naming convention:** 3 digits = model size + quant level. e.g. `358` = 35B Q8, `274` = 27B Q4. Both alias and full filename work in the `model` field of API requests.
+> **Alias naming convention:** 3 digits = model size + quant level. e.g. `358` = 35B Q8, `276` = 27B Q6, `274` = 27B Q4. Both alias and full filename work in the `model` field of API requests.
 
 ### 1. Cloud Nginx Configuration
 
@@ -407,7 +391,6 @@ curl https://{your_domain}/v1/chat/completions \
 | Command | Model |
 |---------|-------|
 | `/model 358` | 35B-A3B Q8 (MoE, fastest) |
-| `/model 278` | 27B Q8 (Dense, best quality) |
 | `/model 276` | 27B Q6 (Dense, balanced) |
 | `/model 274` | 27B Q4 (Dense, most economical) |
 
@@ -421,7 +404,7 @@ curl https://{your_domain}/v1/chat/completions \
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
 - [ ] `~/model/router-preset.ini` configured with model-level params + aliases
-- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns 4 models with aliases
+- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns 3 models with aliases
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
 - [ ] Alias routing: `curl -d '{"model":"358",...}'` routes to 35B-A3B Q8
 

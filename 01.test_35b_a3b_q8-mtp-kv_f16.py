@@ -25,7 +25,7 @@ import signal
 _BASE_DIR = os.environ.get("LLM_BASE_DIR", "/home/user")
 LLAMA_SERVER = os.path.join(_BASE_DIR, "llama/llama.cpp/build/bin/llama-server")
 MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf")
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "01.test_35b_a3b_data.txt")
+DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_bench_data.txt")
 CSV_FILE = os.path.join(_BASE_DIR, "test/bench_358_full.csv")
 API_BASE = "http://127.0.0.1:12345"
 API_KEY = os.environ.get("LLM_API_KEY", "")
@@ -67,7 +67,7 @@ def start_server():
         "--ubatch-size", str(UBATCH),
         "--threads", str(THREADS),
         "--flash-attn", "on",
-        "--n-parallel", "1",
+        "--parallel", "1",
         "--spec-type", "draft-mtp",
         "--spec-draft-n-max", "3",
         "--mlock",

@@ -66,16 +66,29 @@ Q8_0 KV cache tested across 4 UB values (512–4096), compared against F16 KV UB
 
 ### 27B Dense Q8 (Q8_K_XL, removed) — Not Recommended
 
-| Prompt Size | Gen Speed | Prefill Speed | TTFT | KV Cache |
-|-------------|-----------|---------------|------|----------|
-| 128 tokens | 13.1 t/s | 115.2 t/s | 1.1s | F16 |
-| 4K tokens | 11.9 t/s | 133.6 t/s | 30.6s | F16 |
-| 32K tokens | 11.7 t/s | 174.6 t/s | 187.7s | F16 |
-| 64K tokens | 11.7 t/s | 110.0 t/s | 595.6s | F16 |
-| 128K tokens | 10.0 t/s | 49.8 t/s | 2633.1s | F16 |
-| 128K tokens | 9.5 t/s | 115.8 t/s | 1131.9s | Q8_0 |
+**F16 KV cache:**
 
-> **Removed from active roster.** Gen speed ~11–13 t/s (vs Q6 ~17 t/s, Q4 ~21 t/s); 256K context not viable (Vulkan crash with F16 KV, timeout with Q8_0 KV). Q8_0 KV improves prefill at long context (+132% at p128K) but gen still only ~9.5 t/s. Use Q6 or Q4 instead.
+| Prompt Size | Gen Speed | Prefill Speed | TTFT |
+|-------------|-----------|---------------|------|
+| 128 tokens | 13.1 t/s | 115.2 t/s | 1.1s |
+| 4K tokens | 11.9 t/s | 133.6 t/s | 30.6s |
+| 32K tokens | 11.7 t/s | 174.6 t/s | 187.7s |
+| 64K tokens | 11.7 t/s | 110.0 t/s | 595.6s |
+| 128K tokens | 10.0 t/s | 49.8 t/s | 2633.1s |
+| 256K tokens | — | — | ❌ Vulkan crash |
+
+**Q8_0 KV cache:**
+
+| Prompt Size | Gen Speed | Prefill Speed | TTFT |
+|-------------|-----------|---------------|------|
+| 128 tokens | 12.5 t/s | 115.8 t/s | 1.1s |
+| 4K tokens | 12.7 t/s | 130.1 t/s | 31.5s |
+| 32K tokens | 11.7 t/s | 172.3 t/s | 190.2s |
+| 64K tokens | *pending* | *pending* | *pending* |
+| 128K tokens | 9.5 t/s | 115.8 t/s | 1131.9s |
+| 256K tokens | *pending* | *pending* | *pending* |
+
+> **Removed from active roster.** Gen speed ~11–13 t/s (vs Q6 ~17 t/s, Q4 ~21 t/s); Q8_0 KV improves long-context prefill (+132% at p128K) but gen still only ~9.5 t/s. 256K context: F16 KV Vulkan crash, Q8_0 KV result pending. Use Q6 or Q4 instead.
 
 ---
 

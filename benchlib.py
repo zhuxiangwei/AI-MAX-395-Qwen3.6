@@ -168,8 +168,7 @@ def release_lock(lock_name="bench"):
         pass
 
 
-# ── Router Service ─────────────────────────────────────────────
-
+# NOTE: Router service should be manually disabled before benchmarks.
 def disable_router_service():
     """Stop and disable llm-router service."""
     print("  [SERVICE] Stopping and disabling llm-router...")
@@ -183,7 +182,7 @@ def disable_router_service():
     time.sleep(2)
 
 
-# NOTE: No enable_router_service() — per user rule, re-enable manually after all tests
+# No enable_router_service() — per user rule, re-enable manually after all tests.
 
 
 # ── LlamaServer ────────────────────────────────────────────────

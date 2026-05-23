@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""benchlib.py — Shared benchmark library for Strix Halo LLM testing.
+"""benchlib.py — Minimal benchmark library for Strix Halo LLM testing.
+
+Design principle: SIMPLE > CLEVER. No over-abstraction.
+Test scripts are themselves test code — don't make them need their own tests.
 
 Provides:
-- Server management (start/stop llama-server, with service disable/enable)
-- Prompt generation (truncate ffmpeg data to target tokens)
-- SSE stream parsing (prefill/gen/TTFT metrics + MTP draft stats)
-- CSV output with incremental save
-- Standard test workflow enforcement
-
-Usage (imported by 01-08 test scripts):
-    import benchlib
+- kill_all_llama: pkill -9 + verify dead
+- wait_clean: kill + verify + wait memory — LOOPS FOREVER until clean
+- LlamaServer: start/stop (minimal wrapper around subprocess)
+- Prompt generation, SSE parsing, CSV output
 """
 
 import subprocess
@@ -23,120 +22,145 @@ import urllib.request
 import urllib.error
 
 # ── Constants ──────────────────────────────────────────────────
-CHARS_PER_TOKEN = 3.6  # Qwen3.6 tokenizer ratio
+CHARS_PER_TOKEN = 3.6
 DEFAULT_CTX = 262144
 DEFAULT_BATCH = 4096
 DEFAULT_THREADS = 8
 DEFAULT_REASONING_BUDGET = 8192
 DEFAULT_SERVER_PORT = 12345
 DEFAULT_SERVER_READY_TIMEOUT = 180
-DEFAULT_REQUEST_TIMEOUT = 7200  # 2 hours for 256K prefill
+DEFAULT_REQUEST_TIMEOUT = 7200
 
 
-# ── Server Management ──────────────────────────────────────────
-def check_memory_available(min_gb=4.0):
-    """Check available system memory. Returns available GB.
-    
-    Raises RuntimeError if available memory < min_gb.
-    llama-server with 35B model uses ~20GB VRAM + system RAM for model loading.
-    After killing a server, we must wait for GPU VRAM and system RAM to be released.
-    """
+# ── Kill + Clean + Wait ────────────────────────────────────────
+
+def _get_mem_available_gb():
+    """Read MemAvailable from /proc/meminfo, return GB."""
     try:
         with open("/proc/meminfo", "r") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
-                    avail_kb = int(line.split()[1])
-                    avail_gb = avail_kb / 1024 / 1024
-                    return avail_gb
+                    return int(line.split()[1]) / 1024 / 1024
     except Exception:
         pass
-    # Fallback: try free command
-    try:
-        result = subprocess.run(["free", "-g"], capture_output=True, text=True, timeout=5)
-        for line in result.stdout.splitlines():
-            if line.startswith("Mem:"):
-                parts = line.split()
-                avail_gb = float(parts[6]) if len(parts) > 6 else 0
-                return avail_gb
-    except Exception:
-        pass
-    return -1  # unknown
+    return -1
 
 
-def wait_for_memory(target_gb=None, timeout=120, poll_interval=5):
-    """Wait until available memory recovers to a safe level.
-    
-    If target_gb is None, auto-detect: measure available memory before any server
-    starts (baseline), or use 80% of total memory as target.
-    
-    This is critical because GPU VRAM release after kill can take several seconds,
-    and system RAM may still hold pages that need to be freed.
-    """
-    avail = check_memory_available()
-    total_mem_kb = 0
+def _get_mem_total_gb():
+    """Read MemTotal from /proc/meminfo, return GB."""
     try:
         with open("/proc/meminfo", "r") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
-                    total_mem_kb = int(line.split()[1])
-                    break
+                    return int(line.split()[1]) / 1024 / 1024
     except Exception:
         pass
-    
-    if target_gb is None:
-        total_gb = total_mem_kb / 1024 / 1024 if total_mem_kb else 32
-        target_gb = total_gb * 0.75  # 75% of total as baseline
-    
-    print(f"  [MEMORY] Available: {avail:.1f}GB / Target: {target_gb:.1f}GB")
-    
-    if avail >= target_gb:
-        print(f"  [MEMORY] OK — memory sufficient")
-        return True
-    
-    print(f"  [MEMORY] Waiting for memory to recover (timeout={timeout}s)...")
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        time.sleep(poll_interval)
-        avail = check_memory_available()
-        elapsed = time.time() - t0
-        print(f"  [MEMORY]   {elapsed:.0f}s: available={avail:.1f}GB / target={target_gb:.1f}GB")
-        if avail >= target_gb:
-            print(f"  [MEMORY] Recovered after {elapsed:.0f}s")
-            return True
-    
-    print(f"  [MEMORY] WARNING: Memory did not recover to {target_gb:.1f}GB after {timeout}s!")
-    print(f"  [MEMORY] Proceeding anyway — results may be affected!")
-    return False
+    return 32  # fallback
 
+
+def _pgrep_llama():
+    """Return list of llama-server PIDs, empty if none."""
+    try:
+        r = subprocess.run(["pgrep", "-f", "llama-server"],
+                           capture_output=True, text=True, timeout=5)
+        if r.stdout.strip():
+            return [int(x) for x in r.stdout.strip().splitlines()]
+    except Exception:
+        pass
+    return []
+
+
+def _port_in_use(port=DEFAULT_SERVER_PORT):
+    """Check if port has a live llama-server."""
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+        urllib.request.urlopen(req, timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def kill_all_llama():
+    """pkill -9 all llama-server, verify dead. Returns True if clean."""
+    print("  [KILL] Killing all llama-server...")
+    for attempt in range(5):
+        try:
+            subprocess.run(["pkill", "-9", "-f", "llama-server"],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+        time.sleep(2)
+        pids = _pgrep_llama()
+        if not pids:
+            break
+        print(f"  [KILL] Attempt {attempt+1}: still alive PIDs={pids}")
+    pids = _pgrep_llama()
+    if pids:
+        print(f"  [KILL] WARNING: PIDs still alive: {pids}")
+        return False
+    # Wait for port to be freed
+    for _ in range(10):
+        if not _port_in_use():
+            break
+        time.sleep(2)
+    print("  [KILL] All llama-server dead, port free")
+    return True
+
+
+def wait_clean(target_gb=None):
+    """Kill + clean + wait. LOOPS FOREVER until conditions met.
+    
+    - Repeatedly kill residual llama-server processes
+    - Wait for available memory to reach target (default 75% of total)
+    - Does NOT return until clean — this is intentional
+    """
+    if target_gb is None:
+        target_gb = _get_mem_total_gb() * 0.75
+    
+    round_num = 0
+    while True:
+        round_num += 1
+        # 1. Kill any residual processes
+        kill_all_llama()
+        
+        # 2. Check memory
+        avail = _get_mem_available_gb()
+        port_ok = not _port_in_use()
+        pids = _pgrep_llama()
+        
+        print(f"  [WAIT] Round {round_num}: avail={avail:.1f}GB / target={target_gb:.1f}GB, "
+              f"port_free={port_ok}, pids={pids}")
+        
+        if avail >= target_gb and port_ok and not pids:
+            print(f"  [WAIT] Clean! avail={avail:.1f}GB >= {target_gb:.1f}GB")
+            return True
+        
+        # Not clean yet — wait and loop again
+        print(f"  [WAIT] Not clean yet, waiting 10s and retrying...")
+        time.sleep(10)
+
+
+# ── Lock ───────────────────────────────────────────────────────
 
 def acquire_lock(lock_name="bench"):
-    """Acquire a PID lock file to prevent duplicate bench script instances.
-    
-    Creates /tmp/bench_<lock_name>.lock with current PID.
-    If lock exists and process is alive, abort with error.
-    If lock exists but process is dead, steal the lock.
-    """
+    """PID lock to prevent duplicate instances."""
     lock_file = f"/tmp/bench_{lock_name}.lock"
     if os.path.exists(lock_file):
         try:
             with open(lock_file) as f:
                 old_pid = int(f.read().strip())
-            # Check if process is still alive
-            os.kill(old_pid, 0)  # Raises OSError if dead
-            print(f"  [LOCK] ERROR: Another bench instance is running (PID {old_pid})")
-            print(f"  [LOCK] Lock file: {lock_file}")
-            print(f"  [LOCK] If stale, run: rm {lock_file}")
+            os.kill(old_pid, 0)
+            print(f"  [LOCK] ERROR: Another bench running (PID {old_pid})")
+            print(f"  [LOCK] If stale: rm {lock_file}")
             sys.exit(1)
         except (OSError, ProcessLookupError, ValueError):
-            # Process is dead, steal the lock
-            print(f"  [LOCK] Stale lock found (PID {old_pid} dead), stealing...")
+            print(f"  [LOCK] Stale lock (PID {old_pid} dead), stealing...")
     with open(lock_file, "w") as f:
         f.write(str(os.getpid()))
-    print(f"  [LOCK] Acquired lock: {lock_file} (PID {os.getpid()})")
+    print(f"  [LOCK] Acquired: {lock_file}")
 
 
 def release_lock(lock_name="bench"):
-    """Release the PID lock file."""
     lock_file = f"/tmp/bench_{lock_name}.lock"
     try:
         os.remove(lock_file)
@@ -144,8 +168,10 @@ def release_lock(lock_name="bench"):
         pass
 
 
+# ── Router Service ─────────────────────────────────────────────
+
 def disable_router_service():
-    """Stop and disable llm-router service to prevent auto-restart during benchmarks."""
+    """Stop and disable llm-router service."""
     print("  [SERVICE] Stopping and disabling llm-router...")
     try:
         subprocess.run(["systemctl", "--user", "stop", "llm-router.service"],
@@ -157,53 +183,13 @@ def disable_router_service():
     time.sleep(2)
 
 
-def enable_router_service():
-    """Re-enable and start llm-router service after benchmarks."""
-    print("  [SERVICE] Re-enabling llm-router...")
-    try:
-        subprocess.run(["systemctl", "--user", "enable", "llm-router.service"],
-                       capture_output=True, timeout=30)
-        subprocess.run(["systemctl", "--user", "start", "llm-router.service"],
-                       capture_output=True, timeout=30)
-    except Exception as e:
-        print(f"  [SERVICE] Warning: {e}")
+# NOTE: No enable_router_service() — per user rule, re-enable manually after all tests
 
 
-def kill_all_llama():
-    """Kill all llama-server processes, ensure clean state."""
-    print("  [CLEANUP] Killing all llama-server processes...")
-    for attempt in range(3):
-        try:
-            subprocess.run(["pkill", "-9", "-f", "llama-server"],
-                           capture_output=True, timeout=10)
-        except Exception:
-            pass
-        time.sleep(2)
-        # Verify no llama-server processes remain
-        try:
-            result = subprocess.run(["pgrep", "-f", "llama-server"],
-                                    capture_output=True, text=True, timeout=5)
-            if not result.stdout.strip():
-                break
-            print(f"  [CLEANUP] Attempt {attempt+1}: still running PIDs: {result.stdout.strip()}")
-        except Exception:
-            pass
-    else:
-        print("  [CLEANUP] WARNING: llama-server processes still alive after 3 attempts!")
-
-    # Verify port is free
-    for _ in range(10):
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{DEFAULT_SERVER_PORT}/health")
-            urllib.request.urlopen(req, timeout=2)
-            time.sleep(2)
-        except Exception:
-            break
-    print("  [CLEANUP] Done")
-
+# ── LlamaServer ────────────────────────────────────────────────
 
 class LlamaServer:
-    """Context manager for llama-server process lifecycle."""
+    """Minimal llama-server wrapper. start() calls wait_clean() first."""
 
     def __init__(self, model_path, alias, base_dir, api_key="",
                  ubatch=256, cache_type_k="f16", cache_type_v="f16",
@@ -226,8 +212,9 @@ class LlamaServer:
         self.log_file = None
 
     def start(self):
-        """Start llama-server, wait until ready. Returns True on success."""
-        self.stop()  # ensure clean state
+        """Start llama-server. Calls wait_clean() first. Returns True on success."""
+        # Ensure absolutely clean before starting
+        wait_clean()
 
         cmd = [
             os.path.join(self.base_dir, "llama/llama.cpp/build/bin/llama-server"),
@@ -259,8 +246,9 @@ class LlamaServer:
         proc = subprocess.Popen(cmd, stdout=self.log_file, stderr=subprocess.STDOUT)
         self.pid = proc.pid
         kv_desc = f"KV={self.cache_type_k}/{self.cache_type_v}" if self.cache_type_k != "f16" else "F16 KV"
-        print(f"  [SERVER] Started PID={self.pid}, UB={self.ubatch}, {kv_desc}, waiting...")
+        print(f"  [SERVER] Started PID={self.pid}, UB={self.ubatch}, {kv_desc}")
 
+        # Wait for ready
         t0 = time.time()
         while time.time() - t0 < self.ready_timeout:
             try:
@@ -279,19 +267,15 @@ class LlamaServer:
         return False
 
     def stop(self):
-        """Kill llama-server process, verify it's dead, wait for memory release."""
+        """Kill llama-server, verify dead, wait clean."""
         if self.pid:
             try:
                 os.kill(self.pid, signal.SIGTERM)
             except Exception:
                 pass
             time.sleep(1)
-        # Force kill any remaining llama-server processes
-        try:
-            subprocess.run(["pkill", "-9", "-f", "llama-server"],
-                           capture_output=True, timeout=10)
-        except Exception:
-            pass
+        # Force kill ALL llama-server (not just our PID)
+        kill_all_llama()
         self.pid = None
         if self.log_file:
             try:
@@ -299,38 +283,10 @@ class LlamaServer:
             except Exception:
                 pass
             self.log_file = None
-        
-        # Verify process is truly dead
-        time.sleep(2)
-        for attempt in range(3):
-            try:
-                result = subprocess.run(["pgrep", "-f", "llama-server"],
-                                        capture_output=True, text=True, timeout=5)
-                if not result.stdout.strip():
-                    break
-                print(f"  [SERVER] WARNING: llama-server still alive (PIDs: {result.stdout.strip()}), force killing...")
-                subprocess.run(["pkill", "-9", "-f", "llama-server"],
-                               capture_output=True, timeout=10)
-                time.sleep(3)
-            except Exception:
-                break
-        
-        # Verify port is free
-        for _ in range(5):
-            try:
-                req = urllib.request.Request(f"http://127.0.0.1:{self.port}/health")
-                urllib.request.urlopen(req, timeout=2)
-                time.sleep(2)
-            except Exception:
-                break
-        
-        # Wait for memory to be released
-        wait_for_memory(timeout=60)
-        
-        print(f"  [SERVER] Stopped and verified clean")
+        # Wait until truly clean
+        wait_clean()
 
     def read_log(self):
-        """Read server log file, return content as string."""
         log_path = os.path.join(self.base_dir, "test/server_bench.log")
         try:
             with open(log_path, "r", encoding="utf-8", errors="replace") as f:
@@ -340,31 +296,21 @@ class LlamaServer:
 
 
 # ── MTP Detection ──────────────────────────────────────────────
+
 def extract_mtp_stats(log_text):
-    """Extract MTP draft statistics from llama-server log.
-
-    Looks for lines like:
-      "draft spec decode: n_draft = 100, n_accept = 86, acceptance rate = 86.0%"
-      "speculative decoding: n_draft = ..., n_accept = ..., n_draft_total = ..."
-
-    Returns dict with keys: n_draft, n_accept, acceptance_rate (or empty dict)
-    """
+    """Extract MTP draft statistics from llama-server log."""
+    import re
     stats = {}
     for line in log_text.splitlines():
         low = line.lower()
-        # b9210 format
         if "accept" in low and "rate" in low:
-            # Try to parse acceptance rate
             try:
                 if "acceptance rate" in low:
-                    # "acceptance rate = 86.0%"
                     parts = line.split("acceptance rate")
                     if len(parts) > 1:
                         rate_str = parts[1].strip().lstrip("=").strip().rstrip("%")
                         stats["acceptance_rate"] = float(rate_str)
-                if "n_accept" in low or "n draft" in low or "n_draft" in low:
-                    # Parse n_draft and n_accept
-                    import re
+                if "n_accept" in low or "n_draft" in low or "n draft" in low:
                     m = re.search(r'n[_ ]draft[_ ]?(?:total)?\s*[=:]\s*(\d+)', line, re.I)
                     if m:
                         stats["n_draft"] = int(m.group(1))
@@ -377,37 +323,26 @@ def extract_mtp_stats(log_text):
 
 
 # ── Prompt Generation ──────────────────────────────────────────
+
 def load_prompt_data(script_path):
-    """Load test_bench_data.txt from same directory as the script."""
     data_file = os.path.join(os.path.dirname(os.path.abspath(script_path)), "test_bench_data.txt")
     with open(data_file, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def make_prompt(text, target_tokens):
-    """Truncate text to approximately target_tokens, add summarization question."""
     target_chars = int(target_tokens * CHARS_PER_TOKEN)
     truncated = text[:target_chars]
     actual_tokens_est = len(truncated) / CHARS_PER_TOKEN
-
-    prompt = (
-        f"{truncated}\n\n"
-        f"---\n"
-        f"Summarize the above content in 2-3 sentences."
-    )
+    prompt = f"{truncated}\n\n---\nSummarize the above content in 2-3 sentences."
     return prompt, int(actual_tokens_est)
 
 
 # ── SSE Benchmark ──────────────────────────────────────────────
+
 def run_test(server, prompt, prompt_tokens_est, alias,
              request_timeout=DEFAULT_REQUEST_TIMEOUT):
-    """Send chat completion request, parse SSE stream, return metrics dict.
-
-    Key requirements enforced:
-    - No max_tokens limit (model generates freely)
-    - Streaming output
-    - Thinking enabled with budget
-    """
+    """Send chat completion, parse SSE, return metrics dict."""
     api_base = f"http://127.0.0.1:{server.port}"
     payload = json.dumps({
         "model": alias,
@@ -422,10 +357,7 @@ def run_test(server, prompt, prompt_tokens_est, alias,
     }
 
     req = urllib.request.Request(
-        f"{api_base}/chat/completions",
-        data=payload,
-        headers=headers,
-        method="POST",
+        f"{api_base}/chat/completions", data=payload, headers=headers, method="POST",
     )
 
     t0 = time.time()
@@ -446,48 +378,37 @@ def run_test(server, prompt, prompt_tokens_est, alias,
                 while b"\n" in buf:
                     line_bytes, buf = buf.split(b"\n", 1)
                     line = line_bytes.decode("utf-8", errors="replace").strip()
-
                     if not line.startswith("data: "):
                         continue
                     data_str = line[6:]
                     if data_str == "[DONE]":
                         break
-
                     try:
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
-
                     choices = data.get("choices", [])
                     if not choices:
                         continue
-
                     delta = choices[0].get("delta", {})
-
                     if first_token_time is None:
                         if delta.get("reasoning_content") or delta.get("content"):
                             first_token_time = time.time()
-
                     if delta.get("reasoning_content"):
                         reasoning_tokens += 1
                     if delta.get("content"):
                         content_tokens += 1
-
                     usage = data.get("usage")
                     if usage:
                         prompt_tokens_actual = usage.get("prompt_tokens", 0)
                         completion_tokens_actual = usage.get("completion_tokens", 0)
-
     except urllib.error.URLError as e:
-        elapsed = time.time() - t0
-        return {"error": f"URL Error: {e}", "elapsed_s": round(elapsed, 2)}
+        return {"error": f"URL Error: {e}", "elapsed_s": round(time.time() - t0, 2)}
     except Exception as e:
-        elapsed = time.time() - t0
-        return {"error": f"Exception: {e}", "elapsed_s": round(elapsed, 2)}
+        return {"error": f"Exception: {e}", "elapsed_s": round(time.time() - t0, 2)}
 
     elapsed = time.time() - t0
     ttft = (first_token_time - t0) if first_token_time else None
-
     total_completion = completion_tokens_actual if completion_tokens_actual else (reasoning_tokens + content_tokens)
 
     result = {
@@ -507,7 +428,6 @@ def run_test(server, prompt, prompt_tokens_est, alias,
         if gen_time > 0:
             result["gen_tps"] = round(total_completion / gen_time, 1)
 
-    # Extract MTP stats from server log
     log_text = server.read_log()
     mtp = extract_mtp_stats(log_text)
     if mtp:
@@ -518,14 +438,14 @@ def run_test(server, prompt, prompt_tokens_est, alias,
     return result
 
 
-# ── CSV Output ─────────────────────────────────────────────────
+# ── CSV ────────────────────────────────────────────────────────
+
 CSV_FIELDS = ["test", "prompt_tokens", "completion_tokens", "ttft_s",
               "prefill_tps", "gen_tps", "mtp_rate", "mtp_draft", "mtp_accept",
               "elapsed_s", "error"]
 
 
 def save_csv(results, csv_path):
-    """Write results to CSV file."""
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
         writer.writeheader()
@@ -534,7 +454,6 @@ def save_csv(results, csv_path):
 
 
 def print_summary(results):
-    """Print benchmark summary table."""
     print(f"\n{'=' * 80}")
     print("  Benchmark Complete")
     print(f"{'=' * 80}")

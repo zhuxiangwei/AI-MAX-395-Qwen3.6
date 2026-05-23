@@ -1,98 +1,65 @@
 #!/usr/bin/env python3
 """02.bench_278.py — 27B Dense Q8 full benchmark.
 
-Tests 278 (27B Dense Q8) at p128/p4K/p32K/p64K/p128K/p256K.
-Covers F16 KV (UB=256 baseline) and Q8_0 KV (UB=256/512/1024).
-Recommended config: Q8_0 KV + UB=512.
+Tests 278 at p128/p4K/p32K/p64K/p128K/p256K.
+F16 KV (UB=256) + Q8_0 KV (UB=256/512/1024).
 
-Usage (on inference machine):
+Usage:
     LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 02.bench_278.py
-
-Filter by KV type and/or UB:
     python3 -u 02.bench_278.py --kv f16
-    python3 -u 02.bench_278.py --kv q8_0 --ub 512
 """
 
-import os
-import sys
-import time
-import argparse
-
+import os, sys, time, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import benchlib
 
-# ── Configuration ──────────────────────────────────────────────
 _BASE_DIR = os.environ.get("LLM_BASE_DIR", "/home/user")
 MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q8_K_XL.gguf")
 API_KEY = os.environ.get("LLM_API_KEY", "")
-
 ALIAS = "278"
 
-# Test configurations: (kv_type, [ub_values])
-# F16 KV: UB=256 baseline (p256K will timeout, expected)
-# Q8_0 KV: UB=512 is recommended; UB=256/1024 for comparison
-# UB>=2048 crashes at 128K+ for 27B Dense, excluded
-CONFIGS = [
-    ("f16",  [256]),
-    ("q8_0", [256, 512, 1024]),
-]
+CONFIGS = [("f16", [256]), ("q8_0", [256, 512, 1024])]
 
 TEST_POINTS = [
-    ("p128",   128),
-    ("p4K",    4096),
-    ("p32K",   32768),
-    ("p64K",   65536),
-    ("p128K",  131072),
-    ("p256K",  262144),
+    ("p128", 128), ("p4K", 4096), ("p32K", 32768),
+    ("p64K", 65536), ("p128K", 131072), ("p256K", 262144),
 ]
-
-# Timeout scaling by prompt size (seconds)
-TIMEOUT_MAP = {
-    "p128": 300, "p4K": 300, "p32K": 600,
-    "p64K": 1200, "p128K": 3600, "p256K": 7200,
-}
+TIMEOUT_MAP = {"p128": 300, "p4K": 300, "p32K": 600, "p64K": 1200, "p128K": 3600, "p256K": 7200}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="02 — 27B Dense Q8 benchmark (F16 + Q8_0 KV)")
-    parser.add_argument("--kv", choices=["f16", "q8_0", "all"], default="all",
-                        help="KV cache type to test (default: all)")
-    parser.add_argument("--ub", type=int, nargs="*", default=None,
-                        help="UB values to test (default: from CONFIGS)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--kv", choices=["f16", "q8_0", "all"], default="all")
+    parser.add_argument("--ub", type=int, nargs="*", default=None)
     args = parser.parse_args()
 
-    # Build run plan
     run_plan = []
     for kv, ubs in CONFIGS:
         if args.kv != "all" and args.kv != kv:
             continue
-        filtered_ubs = [u for u in ubs if args.ub is None or u in args.ub]
-        for ub in filtered_ubs:
-            run_plan.append((kv, ub))
+        for ub in ubs:
+            if args.ub is None or ub in args.ub:
+                run_plan.append((kv, ub))
 
     print("=" * 64)
     print("  27B Dense Q8 — Full Benchmark")
-    print(f"  Plan: {len(run_plan)} config(s)")
     for kv, ub in run_plan:
         print(f"    KV={kv}, UB={ub}")
     print(f"  Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 64)
 
     if not API_KEY:
-        print("ERROR: LLM_API_KEY environment variable not set. Aborting.")
-        sys.exit(1)
-
+        print("ERROR: LLM_API_KEY not set"); sys.exit(1)
     if not run_plan:
-        print("ERROR: No configurations to test. Check --kv and --ub filters.")
-        sys.exit(1)
+        print("ERROR: No configs to test"); sys.exit(1)
 
-    print("\n[INIT] Loading prompt data...")
     text = benchlib.load_prompt_data(__file__)
     print(f"  Data: {len(text)} chars, ~{len(text)/benchlib.CHARS_PER_TOKEN:.0f} tokens")
 
     benchlib.acquire_lock("278")
     benchlib.disable_router_service()
     benchlib.kill_all_llama()
+    benchlib.wait_clean()
 
     all_results = {}
 
@@ -106,11 +73,9 @@ def main():
             print(f"{'═' * 64}")
 
             results = []
-
             server = benchlib.LlamaServer(
                 model_path=MODEL_PATH, alias=ALIAS, base_dir=_BASE_DIR,
-                api_key=API_KEY, ubatch=ub,
-                cache_type_k=kv, cache_type_v=kv,
+                api_key=API_KEY, ubatch=ub, cache_type_k=kv, cache_type_v=kv,
             )
 
             try:
@@ -118,55 +83,46 @@ def main():
                     timeout = TIMEOUT_MAP.get(name, 7200)
                     test_name = f"ub{ub}_{name}"
                     print(f"\n{'─' * 64}")
-                    print(f"  [{kv} UB={ub}] [{i+1}/{len(TEST_POINTS)}] {name} (~{target_tok} tokens)")
+                    print(f"  [{kv} UB={ub}] [{i+1}/{len(TEST_POINTS)}] {name}")
                     print(f"{'─' * 64}")
 
                     if not server.start():
-                        print(f"  [FAIL] Could not start server, skipping")
+                        print(f"  [FAIL] Server start failed, skipping {name}")
                         results.append({"test": test_name, "error": "server start failed"})
-                        break
+                        continue
 
                     prompt, est_tokens = benchlib.make_prompt(text, target_tok)
-                    print(f"  Prompt: {len(prompt)} chars, ~{est_tokens} tokens")
-
                     if target_tok >= 128000:
-                        print(f"  ⚠ This will take a while. Timeout={timeout}s.")
+                        print(f"  ⚠ Timeout={timeout}s, this will take a while.")
 
-                    print(f"  Running test (timeout={timeout}s)...")
-                    result = benchlib.run_test(server, prompt, est_tokens, ALIAS,
-                                               request_timeout=timeout)
+                    result = benchlib.run_test(server, prompt, est_tokens, ALIAS, request_timeout=timeout)
                     result["test"] = test_name
                     results.append(result)
 
                     if "error" in result:
                         print(f"  [FAIL] {result['error']}")
-                        server.stop()
-                        break
                     else:
-                        pt = result.get("prompt_tokens", "?")
-                        ct = result.get("completion_tokens", "?")
                         pf = result.get("prefill_tps", "?")
                         gf = result.get("gen_tps", "?")
                         mtp = result.get("mtp_rate", "—")
-                        print(f"  [OK] prefill={pf} t/s, gen={gf} t/s, mtp={mtp}%, total={result['elapsed_s']}s")
+                        print(f"  [OK] pf={pf}, gen={gf}, mtp={mtp}%, total={result['elapsed_s']}s")
 
                     server.stop()
+                    benchlib.kill_all_llama()
+                    benchlib.wait_clean()
                     benchlib.save_csv(results, csv_file)
 
             finally:
-                server.stop()
-                # Extra safety: ensure no residual processes between configs
                 benchlib.kill_all_llama()
+                benchlib.wait_clean()
 
             all_results[(kv, ub)] = results
-            print(f"\n  KV={kv} UB={ub} Summary:")
             benchlib.print_summary(results)
 
     finally:
         benchlib.release_lock("278")
         print("\n  Do NOT re-enable router service — re-enable manually when all tests done.")
 
-    # Cross-config comparison
     print(f"\n{'═' * 80}")
     print("  Cross-Config Comparison")
     print(f"{'═' * 80}")
@@ -175,7 +131,7 @@ def main():
         for (kv, ub), results in all_results.items():
             for r in results:
                 if r.get("test", "").endswith(f"_{name}") and "error" not in r:
-                    vals.append(f"KV={kv} UB{ub}: gen={r.get('gen_tps', '?')}, pf={r.get('prefill_tps', '?')}, TTFT={r.get('ttft_s', '?')}")
+                    vals.append(f"KV={kv} UB{ub}: gen={r.get('gen_tps','?')}, pf={r.get('prefill_tps','?')}")
                     break
         if vals:
             print(f"  {name}: {' | '.join(vals)}")

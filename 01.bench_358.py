@@ -157,6 +157,8 @@ def main():
 
             finally:
                 server.stop()
+                # Extra safety: ensure no residual processes between configs
+                benchlib.kill_all_llama()
 
             all_results[(kv, ub)] = results
             print(f"\n  KV={kv} UB={ub} Summary:")

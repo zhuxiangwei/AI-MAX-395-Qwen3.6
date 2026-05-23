@@ -34,6 +34,81 @@ DEFAULT_REQUEST_TIMEOUT = 7200  # 2 hours for 256K prefill
 
 
 # ── Server Management ──────────────────────────────────────────
+def check_memory_available(min_gb=4.0):
+    """Check available system memory. Returns available GB.
+    
+    Raises RuntimeError if available memory < min_gb.
+    llama-server with 35B model uses ~20GB VRAM + system RAM for model loading.
+    After killing a server, we must wait for GPU VRAM and system RAM to be released.
+    """
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    avail_kb = int(line.split()[1])
+                    avail_gb = avail_kb / 1024 / 1024
+                    return avail_gb
+    except Exception:
+        pass
+    # Fallback: try free command
+    try:
+        result = subprocess.run(["free", "-g"], capture_output=True, text=True, timeout=5)
+        for line in result.stdout.splitlines():
+            if line.startswith("Mem:"):
+                parts = line.split()
+                avail_gb = float(parts[6]) if len(parts) > 6 else 0
+                return avail_gb
+    except Exception:
+        pass
+    return -1  # unknown
+
+
+def wait_for_memory(target_gb=None, timeout=120, poll_interval=5):
+    """Wait until available memory recovers to a safe level.
+    
+    If target_gb is None, auto-detect: measure available memory before any server
+    starts (baseline), or use 80% of total memory as target.
+    
+    This is critical because GPU VRAM release after kill can take several seconds,
+    and system RAM may still hold pages that need to be freed.
+    """
+    avail = check_memory_available()
+    total_mem_kb = 0
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total_mem_kb = int(line.split()[1])
+                    break
+    except Exception:
+        pass
+    
+    if target_gb is None:
+        total_gb = total_mem_kb / 1024 / 1024 if total_mem_kb else 32
+        target_gb = total_gb * 0.75  # 75% of total as baseline
+    
+    print(f"  [MEMORY] Available: {avail:.1f}GB / Target: {target_gb:.1f}GB")
+    
+    if avail >= target_gb:
+        print(f"  [MEMORY] OK — memory sufficient")
+        return True
+    
+    print(f"  [MEMORY] Waiting for memory to recover (timeout={timeout}s)...")
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(poll_interval)
+        avail = check_memory_available()
+        elapsed = time.time() - t0
+        print(f"  [MEMORY]   {elapsed:.0f}s: available={avail:.1f}GB / target={target_gb:.1f}GB")
+        if avail >= target_gb:
+            print(f"  [MEMORY] Recovered after {elapsed:.0f}s")
+            return True
+    
+    print(f"  [MEMORY] WARNING: Memory did not recover to {target_gb:.1f}GB after {timeout}s!")
+    print(f"  [MEMORY] Proceeding anyway — results may be affected!")
+    return False
+
+
 def acquire_lock(lock_name="bench"):
     """Acquire a PID lock file to prevent duplicate bench script instances.
     
@@ -97,12 +172,25 @@ def enable_router_service():
 def kill_all_llama():
     """Kill all llama-server processes, ensure clean state."""
     print("  [CLEANUP] Killing all llama-server processes...")
-    try:
-        subprocess.run(["pkill", "-9", "-f", "llama-server"],
-                       capture_output=True, timeout=10)
-    except Exception:
-        pass
-    time.sleep(3)
+    for attempt in range(3):
+        try:
+            subprocess.run(["pkill", "-9", "-f", "llama-server"],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+        time.sleep(2)
+        # Verify no llama-server processes remain
+        try:
+            result = subprocess.run(["pgrep", "-f", "llama-server"],
+                                    capture_output=True, text=True, timeout=5)
+            if not result.stdout.strip():
+                break
+            print(f"  [CLEANUP] Attempt {attempt+1}: still running PIDs: {result.stdout.strip()}")
+        except Exception:
+            pass
+    else:
+        print("  [CLEANUP] WARNING: llama-server processes still alive after 3 attempts!")
+
     # Verify port is free
     for _ in range(10):
         try:
@@ -191,14 +279,17 @@ class LlamaServer:
         return False
 
     def stop(self):
-        """Kill llama-server process."""
+        """Kill llama-server process, verify it's dead, wait for memory release."""
         if self.pid:
             try:
                 os.kill(self.pid, signal.SIGTERM)
             except Exception:
                 pass
+            time.sleep(1)
+        # Force kill any remaining llama-server processes
         try:
-            subprocess.run(["pkill", "-f", "llama-server"], capture_output=True, timeout=10)
+            subprocess.run(["pkill", "-9", "-f", "llama-server"],
+                           capture_output=True, timeout=10)
         except Exception:
             pass
         self.pid = None
@@ -208,8 +299,35 @@ class LlamaServer:
             except Exception:
                 pass
             self.log_file = None
+        
+        # Verify process is truly dead
         time.sleep(2)
-        print(f"  [SERVER] Stopped")
+        for attempt in range(3):
+            try:
+                result = subprocess.run(["pgrep", "-f", "llama-server"],
+                                        capture_output=True, text=True, timeout=5)
+                if not result.stdout.strip():
+                    break
+                print(f"  [SERVER] WARNING: llama-server still alive (PIDs: {result.stdout.strip()}), force killing...")
+                subprocess.run(["pkill", "-9", "-f", "llama-server"],
+                               capture_output=True, timeout=10)
+                time.sleep(3)
+            except Exception:
+                break
+        
+        # Verify port is free
+        for _ in range(5):
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{self.port}/health")
+                urllib.request.urlopen(req, timeout=2)
+                time.sleep(2)
+            except Exception:
+                break
+        
+        # Wait for memory to be released
+        wait_for_memory(timeout=60)
+        
+        print(f"  [SERVER] Stopped and verified clean")
 
     def read_log(self):
         """Read server log file, return content as string."""

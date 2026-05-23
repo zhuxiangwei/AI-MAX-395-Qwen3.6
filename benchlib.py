@@ -209,7 +209,6 @@ class LlamaServer:
         self.port = port
         self.ready_timeout = ready_timeout
         self.pid = None
-        self.log_file = None
 
     def start(self):
         """Start llama-server. Calls wait_clean() first. Returns True on success."""
@@ -242,8 +241,8 @@ class LlamaServer:
 
         log_path = os.path.join(self.base_dir, "test/server_bench.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        self.log_file = open(log_path, "w")
-        proc = subprocess.Popen(cmd, stdout=self.log_file, stderr=subprocess.STDOUT)
+        log_fh = open(log_path, "w")
+        proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
         self.pid = proc.pid
         kv_desc = f"KV={self.cache_type_k}/{self.cache_type_v}" if self.cache_type_k != "f16" else "F16 KV"
         print(f"  [SERVER] Started PID={self.pid}, UB={self.ubatch}, {kv_desc}")
@@ -277,49 +276,10 @@ class LlamaServer:
         # Force kill ALL llama-server (not just our PID)
         kill_all_llama()
         self.pid = None
-        if self.log_file:
-            try:
-                self.log_file.close()
-            except Exception:
-                pass
-            self.log_file = None
         # Wait until truly clean
         wait_clean()
 
-    def read_log(self):
-        log_path = os.path.join(self.base_dir, "test/server_bench.log")
-        try:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                return f.read()
-        except Exception:
-            return ""
 
-
-# ── MTP Detection ──────────────────────────────────────────────
-
-def extract_mtp_stats(log_text):
-    """Extract MTP draft statistics from llama-server log."""
-    import re
-    stats = {}
-    for line in log_text.splitlines():
-        low = line.lower()
-        if "accept" in low and "rate" in low:
-            try:
-                if "acceptance rate" in low:
-                    parts = line.split("acceptance rate")
-                    if len(parts) > 1:
-                        rate_str = parts[1].strip().lstrip("=").strip().rstrip("%")
-                        stats["acceptance_rate"] = float(rate_str)
-                if "n_accept" in low or "n_draft" in low or "n draft" in low:
-                    m = re.search(r'n[_ ]draft[_ ]?(?:total)?\s*[=:]\s*(\d+)', line, re.I)
-                    if m:
-                        stats["n_draft"] = int(m.group(1))
-                    m = re.search(r'n[_ ]accept\s*[=:]\s*(\d+)', line, re.I)
-                    if m:
-                        stats["n_accept"] = int(m.group(1))
-            except (ValueError, IndexError):
-                pass
-    return stats
 
 
 # ── Prompt Generation ──────────────────────────────────────────
@@ -342,12 +302,28 @@ def make_prompt(text, target_tokens):
 
 def run_test(server, prompt, prompt_tokens_est, alias,
              request_timeout=DEFAULT_REQUEST_TIMEOUT):
-    """Send chat completion, parse SSE, return metrics dict."""
+    """Send chat completion, parse SSE, return metrics dict.
+    
+    ALL performance metrics come from the API `timings` object (server-side).
+    No client-side measurement for prefill/gen speed — API timings are more
+    stable and exclude network latency.
+    
+    Timings object fields used:
+        prompt_n           — prompt tokens processed
+        prompt_ms          — prefill time (ms)
+        prompt_per_second  — prefill speed (tok/s)
+        predicted_n        — tokens generated (includes thinking)
+        predicted_ms       — generation time (ms)
+        predicted_per_second — gen speed (tok/s)
+        draft_n            — MTP draft tokens
+        draft_n_accepted   — MTP accepted tokens
+    """
     api_base = f"http://127.0.0.1:{server.port}"
     payload = json.dumps({
         "model": alias,
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
+        "stream_options": {"include_usage": True},
         "thinking": {"type": "enabled", "budget_tokens": 1024},
     }).encode("utf-8")
 
@@ -361,11 +337,7 @@ def run_test(server, prompt, prompt_tokens_est, alias,
     )
 
     t0 = time.time()
-    first_token_time = None
-    content_tokens = 0
-    reasoning_tokens = 0
-    prompt_tokens_actual = 0
-    completion_tokens_actual = 0
+    last_timings = None
 
     try:
         with urllib.request.urlopen(req, timeout=request_timeout) as resp:
@@ -387,61 +359,63 @@ def run_test(server, prompt, prompt_tokens_est, alias,
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
-                    choices = data.get("choices", [])
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta", {})
-                    if first_token_time is None:
-                        if delta.get("reasoning_content") or delta.get("content"):
-                            first_token_time = time.time()
-                    if delta.get("reasoning_content"):
-                        reasoning_tokens += 1
-                    if delta.get("content"):
-                        content_tokens += 1
-                    usage = data.get("usage")
-                    if usage:
-                        prompt_tokens_actual = usage.get("prompt_tokens", 0)
-                        completion_tokens_actual = usage.get("completion_tokens", 0)
+                    # Extract timings from SSE chunk
+                    # (timings chunk may have empty choices array, extract before skip)
+                    timings = data.get("timings")
+                    if timings:
+                        last_timings = timings
     except urllib.error.URLError as e:
         return {"error": f"URL Error: {e}", "elapsed_s": round(time.time() - t0, 2)}
     except Exception as e:
         return {"error": f"Exception: {e}", "elapsed_s": round(time.time() - t0, 2)}
 
     elapsed = time.time() - t0
-    ttft = (first_token_time - t0) if first_token_time else None
-    total_completion = completion_tokens_actual if completion_tokens_actual else (reasoning_tokens + content_tokens)
 
-    result = {
-        "elapsed_s": round(elapsed, 2),
-        "prompt_tokens": prompt_tokens_actual or prompt_tokens_est,
-        "completion_tokens": completion_tokens_actual or total_completion,
-        "ttft_s": round(ttft, 3) if ttft else None,
-    }
+    # ── All metrics from API timings ───────────────────────────
+    result = {"elapsed_s": round(elapsed, 2)}
 
-    if ttft and prompt_tokens_actual:
-        result["prefill_tps"] = round(prompt_tokens_actual / ttft, 1)
-    elif ttft and prompt_tokens_est:
-        result["prefill_tps"] = round(prompt_tokens_est / ttft, 1)
+    if last_timings:
+        # Prompt / prefill
+        prompt_n = last_timings.get("prompt_n", 0)
+        prompt_ms = last_timings.get("prompt_ms", 0)
+        prompt_per_s = last_timings.get("prompt_per_second")
+        result["prompt_tokens"] = prompt_n
+        result["prefill_ms"] = round(prompt_ms, 1)
+        result["prefill_tps"] = round(prompt_per_s, 1) if prompt_per_s else None
+        result["ttft_s"] = round(prompt_ms / 1000, 3) if prompt_ms else None
 
-    if ttft and total_completion > 0:
-        gen_time = elapsed - ttft
-        if gen_time > 0:
-            result["gen_tps"] = round(total_completion / gen_time, 1)
+        # Generation
+        predicted_n = last_timings.get("predicted_n", 0)
+        predicted_ms = last_timings.get("predicted_ms", 0)
+        predicted_per_s = last_timings.get("predicted_per_second")
+        result["completion_tokens"] = predicted_n
+        result["gen_ms"] = round(predicted_ms, 1)
+        result["gen_tps"] = round(predicted_per_s, 1) if predicted_per_s else None
 
-    log_text = server.read_log()
-    mtp = extract_mtp_stats(log_text)
-    if mtp:
-        result["mtp_draft"] = mtp.get("n_draft")
-        result["mtp_accept"] = mtp.get("n_accept")
-        result["mtp_rate"] = mtp.get("acceptance_rate")
+        # MTP
+        draft_n = last_timings.get("draft_n")
+        draft_accepted = last_timings.get("draft_n_accepted")
+        if draft_n is not None and draft_accepted is not None:
+            result["mtp_draft"] = draft_n
+            result["mtp_accept"] = draft_accepted
+            if draft_n > 0:
+                result["mtp_rate"] = round(draft_accepted / draft_n * 100, 1)
+    else:
+        # Fallback: no timings received
+        result["prompt_tokens"] = prompt_tokens_est
+        result["prefill_tps"] = None
+        result["gen_tps"] = None
+        result["ttft_s"] = None
 
     return result
 
 
 # ── CSV ────────────────────────────────────────────────────────
 
-CSV_FIELDS = ["test", "prompt_tokens", "completion_tokens", "ttft_s",
-              "prefill_tps", "gen_tps", "mtp_rate", "mtp_draft", "mtp_accept",
+CSV_FIELDS = ["test", "prompt_tokens", "completion_tokens",
+              "prefill_ms", "prefill_tps", "ttft_s",
+              "gen_ms", "gen_tps",
+              "mtp_rate", "mtp_draft", "mtp_accept",
               "elapsed_s", "error"]
 
 
@@ -454,15 +428,15 @@ def save_csv(results, csv_path):
 
 
 def print_summary(results):
-    print(f"\n{'=' * 80}")
-    print("  Benchmark Complete")
-    print(f"{'=' * 80}")
-    print(f"  {'Test':<8} {'Prompt':>8} {'Compl':>8} {'TTFT':>10} "
-          f"{'Prefill':>10} {'Gen':>10} {'MTP':>6} {'Total':>8}")
-    print(f"  {'─'*8} {'─'*8} {'─'*8} {'─'*10} {'─'*10} {'─'*10} {'─'*6} {'─'*8}")
+    print(f"\n{'=' * 90}")
+    print("  Benchmark Complete (API timings)")
+    print(f"{'=' * 90}")
+    print(f"  {'Test':<10} {'PTok':>7} {'CTok':>7} {'TTFT':>9} "
+          f"{'Prefill':>10} {'Gen':>10} {'MTP':>6} {'Total':>9}")
+    print(f"  {'─'*10} {'─'*7} {'─'*7} {'─'*9} {'─'*10} {'─'*10} {'─'*6} {'─'*9}")
     for r in results:
         if "error" in r and r.get("test"):
-            print(f"  {r['test']:<8} {'ERROR':>8} {r.get('error', '')[:40]}")
+            print(f"  {r['test']:<10} {'ERROR':>7} {r.get('error', '')[:50]}")
         else:
             pt = r.get("prompt_tokens", "?")
             ct = r.get("completion_tokens", "?")
@@ -471,5 +445,5 @@ def print_summary(results):
             gf = f"{r.get('gen_tps', '?')} t/s" if r.get('gen_tps') else "?"
             mtp = f"{r.get('mtp_rate', '?')}%" if r.get('mtp_rate') else "—"
             el = f"{r.get('elapsed_s', '?')}s"
-            print(f"  {r.get('test','?'):<8} {str(pt):>8} {str(ct):>8} {ttft:>10} "
-                  f"{pf:>10} {gf:>10} {mtp:>6} {el:>8}")
+            print(f"  {r.get('test','?'):<10} {str(pt):>7} {str(ct):>7} {ttft:>9} "
+                  f"{pf:>10} {gf:>10} {mtp:>6} {el:>9}")

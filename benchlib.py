@@ -34,6 +34,41 @@ DEFAULT_REQUEST_TIMEOUT = 7200  # 2 hours for 256K prefill
 
 
 # ── Server Management ──────────────────────────────────────────
+def acquire_lock(lock_name="bench"):
+    """Acquire a PID lock file to prevent duplicate bench script instances.
+    
+    Creates /tmp/bench_<lock_name>.lock with current PID.
+    If lock exists and process is alive, abort with error.
+    If lock exists but process is dead, steal the lock.
+    """
+    lock_file = f"/tmp/bench_{lock_name}.lock"
+    if os.path.exists(lock_file):
+        try:
+            with open(lock_file) as f:
+                old_pid = int(f.read().strip())
+            # Check if process is still alive
+            os.kill(old_pid, 0)  # Raises OSError if dead
+            print(f"  [LOCK] ERROR: Another bench instance is running (PID {old_pid})")
+            print(f"  [LOCK] Lock file: {lock_file}")
+            print(f"  [LOCK] If stale, run: rm {lock_file}")
+            sys.exit(1)
+        except (OSError, ProcessLookupError, ValueError):
+            # Process is dead, steal the lock
+            print(f"  [LOCK] Stale lock found (PID {old_pid} dead), stealing...")
+    with open(lock_file, "w") as f:
+        f.write(str(os.getpid()))
+    print(f"  [LOCK] Acquired lock: {lock_file} (PID {os.getpid()})")
+
+
+def release_lock(lock_name="bench"):
+    """Release the PID lock file."""
+    lock_file = f"/tmp/bench_{lock_name}.lock"
+    try:
+        os.remove(lock_file)
+    except OSError:
+        pass
+
+
 def disable_router_service():
     """Stop and disable llm-router service to prevent auto-restart during benchmarks."""
     print("  [SERVICE] Stopping and disabling llm-router...")

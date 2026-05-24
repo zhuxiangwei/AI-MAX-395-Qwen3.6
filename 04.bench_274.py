@@ -2,7 +2,7 @@
 """04.bench_274.py — 27B Dense Q4 full benchmark.
 
 Tests 274 at p128/p4K/p32K/p64K/p128K/p256K.
-F16 KV (UB=128/256/1024) + Q8_0 KV (UB=128/256/1024/2048).
+Q8_0 KV UB=1024 (optimal config).
 
 Usage:
     LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 04.bench_274.py
@@ -18,7 +18,7 @@ MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q4_K_XL.gguf")
 API_KEY = os.environ.get("LLM_API_KEY", "")
 ALIAS = "274"
 
-CONFIGS = [("f16", [128, 256, 1024]), ("q8_0", [128, 256, 1024, 2048])]
+CONFIGS = [("q8_0", [1024])]
 
 TEST_POINTS = [
     ("p128", 128), ("p4K", 4096), ("p32K", 32768),

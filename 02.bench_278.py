@@ -2,7 +2,7 @@
 """02.bench_278.py — 27B Dense Q8 full benchmark.
 
 Tests 278 at p128/p4K/p32K/p64K/p128K/p256K.
-F16 KV (UB=256) + Q8_0 KV (UB=256/512/1024).
+F16 KV (UB=128/256) + Q8_0 KV (UB=128/256/512/1024).
 
 Usage:
     LLM_BASE_DIR=/home/zxw LLM_API_KEY=xxx python3 -u 02.bench_278.py
@@ -18,7 +18,7 @@ MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q8_K_XL.gguf")
 API_KEY = os.environ.get("LLM_API_KEY", "")
 ALIAS = "278"
 
-CONFIGS = [("f16", [256]), ("q8_0", [256, 512, 1024])]
+CONFIGS = [("f16", [128, 256]), ("q8_0", [128, 256, 512, 1024])]
 
 TEST_POINTS = [
     ("p128", 128), ("p4K", 4096), ("p32K", 32768),

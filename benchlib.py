@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """benchlib.py — Minimal benchmark library for Strix Halo LLM testing.
 
 Design principle: SIMPLE > CLEVER. No over-abstraction.
@@ -59,12 +59,26 @@ def _get_mem_total_gb():
 
 
 def _pgrep_llama():
-    """Return list of llama-server PIDs, empty if none."""
+    """Return list of llama-server PIDs (excluding zombies), empty if none."""
     try:
         r = subprocess.run(["pgrep", "-f", "llama-server"],
                            capture_output=True, text=True, timeout=5)
         if r.stdout.strip():
-            return [int(x) for x in r.stdout.strip().splitlines()]
+            pids = [int(x) for x in r.stdout.strip().splitlines()]
+            # Filter out zombies (State: Z) - they can't be killed and will
+            # only disappear when parent reaps them
+            alive = []
+            for p in pids:
+                try:
+                    with open(f"/proc/{p}/status") as sf:
+                        for line in sf:
+                            if line.startswith("State:"):
+                                if "Z" not in line:
+                                    alive.append(p)
+                                break
+                except (FileNotFoundError, PermissionError):
+                    pass  # process gone, skip
+            return alive
     except Exception:
         pass
     return []

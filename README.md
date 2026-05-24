@@ -8,80 +8,95 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 
 ## Performance Benchmarks
 
-All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9210 Vulkan).
+All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9297 Vulkan).
 
 ### 35B-A3B MoE (Q8_K_XL, alias `358`)
 
 **The primary model — fastest generation, stable at 256K context.** ✅ *Testing complete.*
 
-Common config: `-c 262144 -b 4096 -t 8 --mlock --numa distribute --speculative-model root --speculate-algo mtp --speculate-length 5 --reasoning-budget 8192`. Gen speed includes thinking tokens (real usage). MoE activates only 3B of 35B params per token → fastest generation.
+MoE activates only 3B of 35B params per token → fastest generation. All speeds measured via API `timings` (server-side, excludes network latency). Gen speed includes thinking tokens (real usage).
 
-#### F16 KV Cache — UB Sweep (256/512/1024)
+**Optimal config:** F16 KV cache. **UB=512 for ≤128K** (prefill +14~22%), **UB=256 for 256K** (total elapsed -15%). Q8_0 KV has no advantage for MoE — Vulkan FA dequantization overhead exceeds bandwidth savings.
+
+#### F16 KV Cache — UB Sweep (128/256/512/1024)
 
 **Gen speed (t/s):**
 
-| Prompt | UB=256 | UB=512 | UB=1024 |
-|--------|--------|--------|--------|
-| p128 | **54.8** | 52.8 | 51.6 |
-| p4K | **55.1** | 52.1 | 52.9 |
-| p32K | **45.4** | 45.3 | 46.2 |
-| p64K | **43.8** | 44.3 | 38.6 |
-| p128K | **35.6** | 36.0 | 37.1 |
-| p256K | 27.7 | **29.4** | 29.2 |
+| Prompt | UB=128 | UB=256 | UB=512 | UB=1024 |
+|--------|--------|--------|--------|--------|
+| p128 | 54.8 | **54.4** | 52.8 | 51.6 |
+| p4K | 52.4 | **56.6** | 52.1 | 52.9 |
+| p32K | 46.1 | **46.9** | 45.3 | 46.2 |
+| p64K | 43.7 | **45.5** | 44.3 | 38.6 |
+| p128K | —* | **36.5** | 36.0 | 37.1 |
+| p256K | —* | 28.4 | **29.4** | 29.2 |
+
+> *UB=128 p128K/p256K testing in progress.*
 
 **Prefill speed (t/s):**
 
-| Prompt | UB=256 | UB=512 | UB=1024 |
-|--------|--------|--------|--------|
-| p128 | **355.7** | 351.9 | 344.4 |
-| p4K | 389.7 | 474.2 | **492.7** |
-| p32K | 520.7 | 634.4 | **662.1** |
-| p64K | 452.5 | **542.2** | 531.9 |
-| p128K | **346.4** | 392.5 | 287.1 |
-| p256K | **239.2** | 207.8 | 132.3 |
+| Prompt | UB=128 | UB=256 | UB=512 | UB=1024 |
+|--------|--------|--------|--------|--------|
+| p128 | 354.4 | 340.2 | **351.9** | 344.4 |
+| p4K | 523.2 | 391.3 | 474.2 | **492.7** |
+| p32K | 425.1 | **520.1** | 634.4 | **662.1** |
+| p64K | 353.7 | 448.1 | **542.2** | 531.9 |
+| p128K | —* | **344.6** | 392.5 | 287.1 |
+| p256K | —* | **238.2** | 207.8 | 132.3 |
+
+> *UB=128 p128K/p256K testing in progress.*
 
 **TTFT (seconds):**
 
-| Prompt | UB=256 | UB=512 | UB=1024 |
-|--------|--------|--------|--------|
-| p128 | 0.357s | **0.361s** | 0.369s |
-| p4K | 10.5s | 8.64s | **8.31s** |
-| p32K | 63.0s | 51.65s | **49.49s** |
-| p64K | 144.8s | **120.9s** | 123.2s |
-| p128K | **378.4s** | 333.9s | 456.5s |
-| p256K | **1011.1s** | 1163.6s | 1827.6s |
+| Prompt | UB=128 | UB=256 | UB=512 | UB=1024 |
+|--------|--------|--------|--------|--------|
+| p128 | 0.449s | **0.37s** | **0.36s** | 0.37s |
+| p4K | 14.69s | 10.5s | 8.64s | **8.31s** |
+| p32K | 85.9s | 63.0s | 51.65s | **49.49s** |
+| p64K | 196.0s | 146.2s | **120.9s** | 123.2s |
+| p128K | —* | 380.4s | **333.9s** | 456.5s |
+| p256K | —* | **1015.0s** | 1163.6s | 1827.6s |
+
+> *UB=128 p128K/p256K testing in progress.*
 
 **Total elapsed time (seconds):**
 
-| Prompt | UB=256 | UB=512 | UB=1024 |
-|--------|--------|--------|--------|
-| p128 | 22.91s | **10.04s** | 11.01s |
-| p4K | 26.77s | **27.70s** | 27.99s |
-| p32K | 77.08s | **65.17s** | 69.89s |
-| p64K | 167.66s | **146.27s** | 140.54s |
-| p128K | **404.02s** | 356.37s | 485.81s |
-| p256K | **1041.16s** | 1200.3s | 1862.44s |
+| Prompt | UB=128 | UB=256 | UB=512 | UB=1024 |
+|--------|--------|--------|--------|--------|
+| p128 | 10.79s | **10.23s** | **10.04s** | 11.01s |
+| p4K | 33.42s | 28.28s | **27.70s** | 27.99s |
+| p32K | 98.51s | 76.01s | **65.17s** | 69.89s |
+| p64K | 216.45s | 168.82s | 146.27s | **140.54s** |
+| p128K | —* | 406.57s | **356.37s** | 485.81s |
+| p256K | —* | **1040.83s** | 1200.3s | 1862.44s |
+
+> *UB=128 p128K/p256K testing in progress.*
+
+> ⚠️ Elapsed time depends on completion token count (varies per run due to thinking). Compare within same UB sweep only; do not compare elapsed across different test runs. Prefill/gen/TTFT are stable metrics.
 
 **Findings:**
 
-1. **UB=512 is optimal for ≤128K context** — prefill +14~22%, TTFT -12~18%, total elapsed -2~14% vs UB=256
-2. **UB=256 remains optimal for 256K context** — p256K prefill 13% faster, total elapsed 15% faster (saves ~160s)
-3. **UB=1024 is fastest at p4K–p32K prefill but degrades severely at p128K+** — p256K prefill drops to 132 t/s (-44%), TTFT balloons to 1828s (+80%)
-4. **No Vulkan crashes at any UB** — all completed all 6 test points including p256K
-5. **Gen speed is consistent across UB values** — within 1~2 t/s, not a differentiator
+1. **UB=512 is optimal for ≤128K context** — prefill +14~22% vs UB=256, TTFT -12~18%
+2. **UB=256 remains optimal for 256K context** — p256K prefill 13% faster, TTFT 13% faster vs UB=512
+3. **UB=1024 degrades severely at p128K+** — p256K prefill drops to 132 t/s (-44%), TTFT balloons to 1828s (+80% vs UB=256)
+4. **UB=128 is suboptimal for 35B MoE** — MTP hit rate drops from ~86% to ~65%, hurting gen speed; prefill is slower than UB=256/512 at p32K+. Unlike 27B Dense (where UB=128 unlocks F16 KV at 256K), 35B MoE already works at UB=256/512
+5. **Gen speed is consistent across UB=256~1024** — within 1~2 t/s, not a differentiator; UB=128 gen is slower due to MTP degradation
+6. **No Vulkan crashes at any UB** — F16 KV is stable up to 256K context
 
 #### Q8_0 KV Cache — UB Sweep (512/1024/2048)
 
 Q8_0 KV cache tested across 3 UB values, compared against F16 KV UB=256 baseline.
 
+> Note: The F16 ub=256 baseline in this table was measured during the same test session as the Q8_0 data (API timings), so values may differ slightly from the main F16 KV table above (different session, client-side measurement).
+
 **Prefill speed (t/s):**
 
 | Prompt | F16 ub=256 | Q8_0 ub=512 | Q8_0 ub=1024 | Q8_0 ub=2048 |
 |--------|-----------|-------------|--------------|--------------|
-| p128 | **355.7** | 364.2 | 297.9 | 338.2 |
-| p4K | **389.7** | 468.8 | **480.0** | 450.0 |
+| p128 | 355.7 | **364.2** | 297.9 | 338.2 |
+| p4K | 389.7 | 468.8 | **480.0** | 450.0 |
 | p32K | 520.7 | 544.9 | **589.0** | 576.1 |
-| p64K | **452.5** | 421.3 | **450.8** | 440.4 |
+| p64K | **452.5** | 421.3 | 450.8 | 440.4 |
 | p128K | **346.4** | 287.5 | 298.7 | 295.2 |
 | p256K | **239.2** | 199.9 | 188.2 | 185.8 |
 
@@ -91,7 +106,7 @@ Q8_0 KV cache tested across 3 UB values, compared against F16 KV UB=256 baseline
 |--------|-----------|-------------|--------------|--------------|
 | p128 | **54.8** | 51.6 | 53.5 | 52.5 |
 | p4K | **55.1** | 51.3 | 50.2 | 52.7 |
-| p32K | **45.4** | 45.3 | 46.1 | 43.9 |
+| p32K | 45.4 | 45.3 | **46.1** | 43.9 |
 | p64K | **43.8** | 43.7 | 40.7 | 41.2 |
 | p128K | **35.6** | 34.0 | 33.3 | 33.3 |
 | p256K | **27.7** | 24.3 | 25.4 | 25.9 |
@@ -100,17 +115,18 @@ Q8_0 KV cache tested across 3 UB values, compared against F16 KV UB=256 baseline
 
 | Prompt | F16 ub=256 | Q8_0 ub=512 | Q8_0 ub=1024 | Q8_0 ub=2048 |
 |--------|-----------|-------------|--------------|--------------|
-| p128K | **404** | 477 | **469** | 468 |
+| p128K | **404** | 477 | 469 | 468 |
 | p256K | **1041** | 1352 | 1321 | 1338 |
 
-> UB=2048 p256K completed successfully (Q8_0 KV reduces VRAM peak vs F16 KV). All Q8_0 configs slower than F16 KV UB=256 at 256K. Elapsed = TTFT + generation time.
+> UB=2048 p256K completed successfully (Q8_0 KV reduces VRAM peak vs F16 KV). All Q8_0 configs slower than F16 KV UB=256 at 256K. Elapsed = TTFT + generation time. ⚠️ Elapsed depends on completion token count; do not compare across test runs.
 
 **Findings:**
 
-1. **Q8_0 KV UB=1024 is the best among Q8_0 configs** — fastest prefill at p4K–p128K, shortest total elapsed among Q8_0 at p128K
-2. **Even the best Q8_0 config (ub=1024) loses to F16 KV ub=256 at p64K+** — prefill -2~13%, gen -7~9%
+1. **Q8_0 KV UB=1024 is the best among Q8_0 configs** — fastest prefill at p4K–p128K, shortest total elapsed at p128K/p256K
+2. **Even the best Q8_0 config (ub=1024) loses to F16 KV ub=256 at p64K+** — prefill -2~21%, gen -7~9%
 3. **Q8_0 KV has no advantage for 35B MoE** — Vulkan FA dequantization overhead exceeds the bandwidth savings from Q8_0 compression; MoE's sparse KV cache (3B active params) means limited bandwidth to save
-4. **Conclusion: F16 KV UB=512 is optimal for ≤128K, UB=256 for 256K.** Q8_0 KV is not recommended for 35B MoE.
+4. **UB=2048 p256K completed without crash** — Q8_0 KV reduces VRAM peak vs F16 KV, but still slower than F16 KV UB=256
+5. **Conclusion: F16 KV UB=512 for ≤128K, UB=256 for 256K.** Q8_0 KV is not recommended for 35B MoE.
 
 ### 27B Dense Q8 (Q8_K_XL, alias `278`)
 
@@ -161,7 +177,7 @@ Q8_0 KV cache tested across 3 UB values (256–1024), compared against F16 KV UB
 |--------|-----------|-------------|-------------|--------------|
 | p128 | 1.1s | 1.1s | 2.1s | 2.1s |
 | p4K | 30.6s | 31.5s | 32.7s | 32.4s |
-| p32K | 187.7s | 190.2s | **160.0s** | **154.6s** |
+| p32K | 187.7s | 190.2s | 160.0s | **154.6s** |
 | p64K | 595.6s | 433.8s | **248.0s** | 250.4s |
 | p128K | 2633.1s | 1132s | **708.3s** | 1136.9s |
 | p256K | ❌ | 2994.1s | **1891.4s** | 1917.1s |
@@ -175,20 +191,22 @@ Q8_0 KV cache tested across 3 UB values (256–1024), compared against F16 KV UB
 
 **Findings:**
 
-1. **UB=512 is the optimal choice for 27B Dense Q8_0 KV** — fastest TTFT and total time at p64K–p256K; prefill +75% vs UB=256 at p64K
-2. **UB=1024 outperforms UB=256 only at p256K prefill** (+69%), but underperforms UB=512 at p128K/p256K TTFT by 38–60%
-3. **Q8_0 KV makes 256K context viable** — F16 KV times out at 256K; Q8_0 KV completes in 33–53 min
-4. **Q8_0 KV dramatically improves long-context prefill** — p128K: +132% vs F16; p64K: +37% vs F16
+1. **UB=512 is the optimal choice for 27B Dense Q8_0 KV** — fastest TTFT and total time at p64K–p256K; p64K prefill +75% vs UB=256
+2. **UB=1024 outperforms UB=256 only at p256K prefill** (+69%), but underperforms UB=512 at p128K TTFT by 60% (1137s vs 708s)
+3. **Q8_0 KV makes 256K context viable** — F16 KV times out at 256K; Q8_0 KV UB=512 completes in 33 min
+4. **Q8_0 KV dramatically improves long-context prefill** — p128K: +271% vs F16 (185 vs 50); p64K: +140% vs F16 (264 vs 110)
 5. **UB≥2048 Vulkan crash** — UB=2048 crashes at p256K; 27B Dense has tighter VRAM headroom than 35B MoE
-6. **UB=512 p256K total time 33 min vs UB=256's 53 min** — saves 20 minutes per 256K request
+6. **Short prompt prefill anomaly** — Q8_0 KV UB≥512 drops p128 prefill from 116→61 t/s (Vulkan Dense large KV cache + high UB slow path)
 
 
 
 ### 27B Dense Q6 (Q6_K_XL, alias `276`)
 
-Dense model at Q6 quantization. **F16 KV cache OOMs at 64K+ context** — Q8_0 KV cache is mandatory for long-context use. **Recommended config: Q8_0 KV cache + ub=512** — all 6 test points pass including p256K.
+Dense model at Q6 quantization. **F16 KV cache OOMs at 64K+ with UB≥512**, but **UB=128 unlocks F16 KV through p256K**. **Recommended config: Q8_0 KV cache + ub=512** — all 6 test points pass including p256K, fastest overall. **Alternative: F16 KV + UB=128** — unlocks p64K–p256K, but slower than Q8_0 KV.
 
-**F16 KV cache (ub=512):**
+#### F16 KV Cache
+
+**UB=512 (short-context only):**
 
 | Prompt Size | Gen Speed | Prefill Speed | TTFT | Status |
 |-------------|-----------|---------------|------|--------|
@@ -199,7 +217,25 @@ Dense model at Q6 quantization. **F16 KV cache OOMs at 64K+ context** — Q8_0 K
 | 128K tokens | — | — | — | ❌ OOM |
 | 256K tokens | — | — | — | ❌ OOM |
 
-> Config: `-c 262144 -b 4096 -ub 512 -t 8`, F16 KV cache. 27B Q6 weights are larger than Q8, leaving less VRAM for KV cache at long contexts.
+> Config: `-c 262144 -b 4096 -ub 512 -t 8`, F16 KV cache. F16 KV + UB=512 exceeds VRAM at 64K+ context.
+
+**UB=128 supplement (unlocks p64K–p256K):**
+
+| Prompt | Gen Speed | Prefill Speed | TTFT | Elapsed |
+|--------|-----------|---------------|------|---------|
+| p64K | 13.6 t/s | 163.9 t/s | 423s | 470s |
+| p128K | 11.8 t/s | 117.2 t/s | 1158s | 1229s |
+| p256K | 9.5 t/s | 44.7 t/s | 5595s | 5671s |
+
+**UB=256 supplement:**
+
+| Prompt | Gen Speed | Prefill Speed | TTFT | Elapsed |
+|--------|-----------|---------------|------|---------|
+| p64K | 14.1 t/s | 120.0 t/s | 578s | 651s |
+| p128K | 12.7 t/s | 52.4 t/s | 2589s | 2680s |
+| p256K | — | — | — | ❌ timeout |
+
+> **UB=128 finding:** Reducing UB from 512→128 unlocks F16 KV at 64K–256K context. UB=128 prefill is 27~124% faster than UB=256 at p64K+ (163.9 vs 120.0 at p64K, 117.2 vs 52.4 at p128K). However, Q8_0 KV UB=512 still outperforms F16 KV UB=128 in generation speed and total elapsed time at 256K.
 
 #### Q8_0 KV Cache + UB Sweep
 
@@ -224,15 +260,19 @@ Dense model at Q6 quantization. **F16 KV cache OOMs at 64K+ context** — Q8_0 K
 **Findings:**
 
 1. **Q8_0 KV UB=512 is optimal** — fastest TTFT and total elapsed at all long-context sizes
-2. **F16 KV is not viable beyond 32K** — p64K times out, p128K/p256K OOM
-3. **Q8_0 KV UB=512 vs 1024: marginal difference** — UB=512 slightly faster at p64K+; UB=1024 slightly faster prefill at p32K
-4. **256K context viable with Q8_0 KV** — p256K completes in ~52 min (UB=512)
+2. **F16 KV UB=512 is not viable beyond 32K** — p64K times out, p128K/p256K OOM
+3. **F16 KV UB=128 unlocks p64K–p256K** — but still slower than Q8_0 KV UB=512 at 256K (5671s vs 3111s elapsed)
+4. **UB=128 vs UB=256 for F16 KV** — UB=128 is 27~124% faster prefill at p64K+; UB=256 times out at p256K
+5. **Q8_0 KV UB=512 vs 1024: marginal difference** — UB=512 slightly faster at p64K+; UB=1024 slightly faster prefill at p32K
+6. **256K context viable with Q8_0 KV** — p256K completes in ~52 min (UB=512)
 
 ### 27B Dense Q4 (Q4_K_XL, alias `274`)
 
-Dense model at Q4 quantization — smallest model, fastest generation. **F16 KV cache only works up to 4K** — Q8_0 KV cache is essential for any practical use. **Recommended config: Q8_0 KV cache + ub=1024** — all 6 test points pass including p256K.
+Dense model at Q4 quantization — smallest model, fastest generation. **F16 KV cache only works up to 4K with UB=1024**, but **UB=128 unlocks F16 KV through p256K**. **Recommended config: Q8_0 KV cache + ub=1024** — all 6 test points pass including p256K, fastest overall. **Alternative: F16 KV + UB=128** — unlocks p32K–p256K, but slower than Q8_0 KV.
 
-**F16 KV cache (ub=1024):**
+#### F16 KV Cache
+
+**UB=1024 (short-context only):**
 
 | Prompt Size | Gen Speed | Prefill Speed | TTFT | Status |
 |-------------|-----------|---------------|------|--------|
@@ -240,7 +280,27 @@ Dense model at Q4 quantization — smallest model, fastest generation. **F16 KV 
 | 4K tokens | 22.7 t/s | 153.3 t/s | 26.7s | ✅ |
 | 32K+ | — | — | — | ❌ OOM |
 
-> Config: `-c 262144 -b 4096 -ub 1024 -t 8`, F16 KV cache. Q4 weights + F16 KV at 32K+ exceeds available VRAM.
+> Config: `-c 262144 -b 4096 -ub 1024 -t 8`, F16 KV cache. F16 KV cache at 32K+ context exceeds available VRAM even with Q4's smaller model footprint.
+
+**UB=128 supplement (unlocks p32K–p256K):**
+
+| Prompt | Gen Speed | Prefill Speed | TTFT | Elapsed |
+|--------|-----------|---------------|------|---------|
+| p32K | 21.4 t/s | 231.2 t/s | 158s | 217s |
+| p64K | 19.3 t/s | 194.2 t/s | 357s | 408s |
+| p128K | 15.2 t/s | 134.6 t/s | 1008s | 1077s |
+| p256K | 12.1 t/s | 47.6 t/s | 5258s | 5325s |
+
+**UB=256 supplement:**
+
+| Prompt | Gen Speed | Prefill Speed | TTFT | Elapsed |
+|--------|-----------|---------------|------|---------|
+| p32K | 20.4 t/s | 239.7 t/s | 152s | 204s |
+| p64K | 18.7 t/s | 134.8 t/s | 514s | 562s |
+| p128K | 15.8 t/s | 55.2 t/s | 2455s | 2490s |
+| p256K | — | — | — | ❌ timeout |
+
+> **UB=128 finding:** Reducing UB from 1024→128 unlocks F16 KV at 32K–256K context. UB=128 is dramatically faster than UB=256 at p64K+ (prefill +44~144%), and is the only F16 KV config that completes p256K. However, Q8_0 KV UB=1024 still outperforms in total elapsed time at 256K (2994s vs 5325s).
 
 #### Q8_0 KV Cache + UB Sweep
 
@@ -255,6 +315,15 @@ Dense model at Q4 quantization — smallest model, fastest generation. **F16 KV 
 | p128K | 123.9 | 14.3 | 1058.0s | 125.6 | 14.6 | 1043.3s |
 | p256K | 82.9 | 10.0 | 2916.5s | ❌ | ❌ | ❌ Vulkan crash |
 
+**Q8_0 KV p256K UB=128 vs UB=256 supplement:**
+
+| UB | Prefill | Gen | TTFT | Elapsed |
+|----|---------|-----|------|---------|
+| 128 | 78.2 t/s | 10.3 t/s | 3198s | 3276s |
+| 256 | 91.1 t/s | 10.5 t/s | 2746s | 2834s |
+
+> UB=256 is faster than UB=128 for Q8_0 KV at p256K. UB=1024 remains optimal overall for Q8_0 KV.
+
 **Total elapsed time (seconds):**
 
 | Prompt | Q8_0 UB=1024 | Q8_0 UB=2048 |
@@ -264,12 +333,14 @@ Dense model at Q4 quantization — smallest model, fastest generation. **F16 KV 
 
 **Findings:**
 
-1. **Q8_0 KV UB=1024 is the only viable config for full-range use** — all 6 points pass, p256K in ~50 min
-2. **F16 KV is impractical** — only p128 and p4K work
-3. **UB=2048 crashes at p256K** — same Vulkan VRAM limit pattern as other models
-4. **27B Q4 is the fastest Dense model** — gen ~10–25 t/s vs Q6's 8–18 t/s vs Q8's 7–13 t/s
+1. **Q8_0 KV UB=1024 is the best overall config** — all 6 points pass, p256K in ~50 min
+2. **F16 KV UB=1024 is impractical beyond p4K** — but UB=128 unlocks p32K–p256K (see below)
+3. **F16 KV UB=128 unlocks p32K–p256K** — but Q8_0 KV UB=1024 still wins at p256K (2994s vs 5325s elapsed)
+4. **UB=2048 crashes at p256K** — same Vulkan VRAM limit pattern as other models
+5. **27B Q4 is the fastest Dense model** — gen ~10–25 t/s vs Q6's 8–18 t/s vs Q8's 7–13 t/s
+6. **UB=128 is the "unlock key" for F16 KV** — enables F16 KV at context lengths where higher UB values OOM or timeout; same pattern observed in Q6
 
-### Cross-Model Comparison (Q8_0 KV, Best UB)
+### Cross-Model Comparison (Best KV + Best UB per Model)
 
 | Prompt | 35B MoE Q8 (UB=512) | 27B Q8 (UB=512) | 27B Q6 (UB=512) | 27B Q4 (UB=1024) |
 |--------|---------------------|----------------|-----------------|------------------|
@@ -281,7 +352,7 @@ Dense model at Q4 quantization — smallest model, fastest generation. **F16 KV 
 | p256K Gen | 29.4 | 6.8 | 8.0 | 10.0 |
 | p256K Elapsed | 1200s | 1983s | 3111s | 2994s |
 
-> 35B MoE gen speed includes thinking tokens. Dense model gen speeds also include thinking. All configs use Q8_0 KV cache with each model's optimal UB value, except 35B MoE which uses F16 KV (Q8_0 KV has no advantage for MoE).
+> Each model uses its optimal config: 35B MoE = F16 KV UB=512 (≤128K optimal), 27B Q8/Q6 = Q8_0 KV UB=512, 27B Q4 = Q8_0 KV UB=1024. Gen speeds include thinking tokens. 35B MoE p256K uses UB=256 (optimal for 256K): gen 28.4 t/s, elapsed 1041s.
 
 ---
 
@@ -293,7 +364,7 @@ Dense model at Q4 quantization — smallest model, fastest generation. **F16 KV 
 |----------|-----------|
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
 | Unified 256K context | `-c` only pre-allocates KV cache; no performance impact; one config for all prompt lengths |
-| Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability |
+| Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; UB=128 unlocks F16 KV for 27B Dense at 256K context |
 | No `--cache-ram` | Pinned alloc fails on unified memory and is 4.6% slower; default prompt cache is better |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost |
 | `-np 1` mandatory | MTP does not support multi-slot; 5 concurrent → 75% speed loss |
@@ -308,8 +379,8 @@ Dense model at Q4 quantization — smallest model, fastest generation. **F16 KV 
 | Constraint | Value | Reason |
 |-----------|-------|--------|
 | Max concurrent slots | 1 (`-np 1`) | **Mandatory** — MTP does not support multi-slot |
-| 35B MoE: max context | 256K (ub=256) | ub≥2048 causes Vulkan crash at 128K+ |
-| 27B Dense: max context | 256K (Q8_0 KV, ub=512) | F16 KV 256K times out; Q8_0 KV ub=512 viable at 256K (33 min); ub≥2048 crashes |
+| 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥2048 Vulkan crash at 128K+ |
+| 27B Dense: max context | 256K (Q8_0 KV or F16 KV UB=128) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4) recommended; F16 KV UB=128 also reaches 256K for Q4/Q6; F16 KV default UB times out at 256K; UB≥2048 crashes |
 | Thinking mode | Enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking tokens; no performance cost |
 | Avoid concurrency | 1 request at a time | Concurrent → 75% speed loss |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
@@ -447,10 +518,23 @@ alias = 274
 |-----------|-------------------|
 | Inference OS | Ubuntu 26.04 LTS |
 | Cloud OS | Ubuntu 24.04.4 LTS |
-| llama.cpp | b9210 (commit c3f95c1f0, Vulkan backend) |
+| llama.cpp | b9297 (commit b22ff4b7b, Vulkan backend) |
 | Build options | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` (+ BLAS/OpenMP/LTO/NATIVE) |
 | Vulkan runtime | 1.4.341 |
 | API protocol | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) |
+
+**Building llama.cpp:**
+
+```bash
+cd ~/llama/llama.cpp
+git pull origin master                    # update source
+cmake -B build --fresh \
+  -DGGML_VULKAN=ON \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+> `--fresh` resets CMake cache (recommended after version upgrades). Binary: `build/bin/llama-server`.
 
 **Path layout on inference box:**
 
@@ -700,4 +784,4 @@ curl https://{your_domain}/v1/chat/completions \
 
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9210 Vulkan · 2026-05-23*
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9297 Vulkan · 2026-05-24*

@@ -250,6 +250,7 @@ class LlamaServer:
             "--api-key", self.api_key,
             "--alias", self.alias,
             "--timeout", "3600",
+            "--metrics",
         ]
 
         log_path = os.path.join(self.base_dir, "test/server_bench.log")

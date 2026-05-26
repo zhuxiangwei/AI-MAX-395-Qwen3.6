@@ -10,7 +10,7 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 
 All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9299 Vulkan). Speeds via API `timings` (server-side, excludes network). Gen speed includes thinking tokens.
 
-### 35B-A3B MoE (Q8_K_XL, alias `358`)
+### 35B-A3B MoE (UD-Q8_K_XL, alias `358`)
 
 **Primary model — fastest generation, stable at 256K.** MoE activates only 3B/35B params per token.
 
@@ -44,9 +44,9 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 ### 35B-A3B MoE APEX I-Quality (alias `35q`, ~22 GB)
 
-APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than original Q8 + MTP, 59% file size.**
+APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.**
 
-**Optimal config: F16 KV cache.** Same pattern as original 35B Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
+**Optimal config: F16 KV cache.** Same pattern as 35B UD-Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
 
 #### F16 KV UB=512 (optimal ≤128K)
 
@@ -70,7 +70,7 @@ APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per 
 | p128K | 42.9 | 364.1 | 372.5s |
 | p256K | 32.2 | 251.1 | 996.4s |
 
-> APEX I-Quality gen speed **~48% faster** than original Q8 at all prompt sizes (80 vs 54 t/s). File size 21.9 GB vs 37 GB.
+> APEX I-Quality gen speed **~48% faster** than UD-Q8 at all prompt sizes (80 vs 54 t/s). File size 21.9 GB vs 37 GB.
 
 ### 35B-A3B MoE APEX I-Balanced (alias `35b`, ~24 GB)
 
@@ -100,7 +100,7 @@ APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor
 | p128K | 44.5 | 356.7 | 380.26s |
 | p256K | 32.0 | 246.9 | 1013.52s |
 
-> APEX I-Balanced gen speed **~40% faster** than original Q8. Quality leader: KL max 4.53 is the best among all quantizations.
+> APEX I-Balanced gen speed **~40% faster** than UD-Q8. Quality leader: KL max 4.53 is the best among all quantizations.
 
 ### 27B Dense Q8 (Q8_K_XL, alias `278`)
 
@@ -167,7 +167,7 @@ Dense model, Q4 quantization — fastest generation among Dense models.
 
 ### Cross-Model Comparison (Optimal Configs)
 
-| Prompt | APEX I-Q | APEX I-B | 35B Q8 | 27B Q8 | 27B Q6 | 27B Q4 |
+| Prompt | APEX I-Q | APEX I-B | 35B UD-Q8 | 27B Q8 | 27B Q6 | 27B Q4 |
 |--------|---------|---------|--------|--------|--------|--------|
 | p128 Gen | 84.1 | 78.2 | 56.7 | 13.8 | 18.9 | 26.5 |
 | p4K Gen | 80.3 | 78.9 | 56.7 | 13.4 | 17.2 | 25.1 |
@@ -196,7 +196,7 @@ Dense model, Q4 quantization — fastest generation among Dense models.
 | **Total** | **48/80** | **55/80** 🏆 | **53/80** |
 | Avg Gen speed | 82.3 t/s | 81.7 t/s | 57.3 t/s |
 
-> APEX I-Balanced scores highest (55/80) — lighter quantization preserves reasoning better. I-Quality is fastest but shows more reasoning errors (especially syllogism: 0/10). All three struggle with syllogism (keyword-based scoring may be strict). 358 scores 10/10 on liar paradox where APEX models get 7/10.
+> APEX I-Balanced scores highest (55/80) — imatrix calibration may better preserve reasoning patterns in MoE models. I-Quality is fastest but shows more reasoning errors (especially syllogism: 0/10). All three struggle with syllogism (keyword-based scoring may be strict). UD-Q8 scores 10/10 on liar paradox where APEX models get 7/10.
 
 ### Vision Test (35B MoE + mmproj, MTP enabled)
 
@@ -214,7 +214,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | | | 35b | **71.1** | 56.6% | 35.2s |
 | | | 358 | 53.5 | 55.2% | 39.9s |
 
-> Vision mode MTP accept rate (48–57%) is significantly lower than text mode (60–70%), as visual tokens are harder to predict. APEX I-Quality is ~39% faster than original Q8 on vision tasks. All three models accurately describe image contents.
+> Vision mode MTP accept rate (48–57%) is significantly lower than text mode (60–70%), as visual tokens are harder to predict. APEX I-Quality is ~39% faster than UD-Q8 on vision tasks. All three models accurately describe image contents.
 
 ---
 
@@ -450,12 +450,12 @@ Router Mode serves all models from `$HOME/model/`. Only one is loaded at a time 
 |-------|------|-------|-------|------|------|---------------|
 | Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | **35q** | APEX mixed | **MoE** | ~22 GB | 3B |
 | Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | **35b** | APEX mixed | **MoE** | ~24 GB | 3B |
-| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | Q8_K_XL | **MoE** | ~37 GB | 3B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | Q8_K_XL | Dense | ~33 GB | 27B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | Q6_K_XL | Dense | ~25 GB | 27B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | Q4_K_XL | Dense | ~17 GB | 27B |
+| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | UD-Q8_K_XL | **MoE** | ~37 GB | 3B |
+| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | UD-Q8_K_XL | Dense | ~33 GB | 27B |
+| Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | UD-Q6_K_XL | Dense | ~25 GB | 27B |
+| Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | UD-Q4_K_XL | Dense | ~17 GB | 27B |
 
-> **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. Original UD quant models use 3 digits = model size + quant level. e.g. `358` = 35B Q8, `276` = 27B Q6. Both alias and full filename work in API requests.
+> **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. UD (Unsloth Dynamic) quant models use 3 digits = model size + quant level. e.g. `358` = 35B Q8, `276` = 27B Q6. Source: [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF). Both alias and full filename work in API requests.
 
 ### 1. Cloud Nginx Configuration
 

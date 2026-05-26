@@ -42,6 +42,66 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 > Gen speed is nearly identical across UB=256/512 (±2 t/s). UB choice mainly affects prefill/TTFT: UB=512 is faster at ≤128K; UB=256 is faster at 256K.
 
+### 35B-A3B MoE APEX I-Quality (alias `35q`, ~22 GB)
+
+APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than original Q8 + MTP, 59% file size.**
+
+**Optimal config: F16 KV cache.** Same pattern as original 35B Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
+
+#### F16 KV UB=512 (optimal ≤128K)
+
+| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
+|--------|----------|--------------|------|
+| p128 | 84.1 | 401.7 | 0.40s |
+| p4K | 80.3 | 934.9 | 8.2s |
+| p32K | 62.3 | 731.1 | 49.9s |
+| p64K | 57.2 | 590.0 | 117.5s |
+| p128K | 47.0 | 425.1 | 319.1s |
+| p256K | 32.9 | 241.0 | 1038.2s |
+
+#### F16 KV UB=256 (optimal 256K)
+
+| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
+|--------|----------|--------------|------|
+| p128 | 82.4 | 396.7 | 0.40s |
+| p4K | 73.5 | 761.2 | 10.1s |
+| p32K | 66.8 | 597.7 | 61.1s |
+| p64K | 58.8 | 488.7 | 141.8s |
+| p128K | 42.9 | 364.1 | 372.5s |
+| p256K | 32.2 | 251.1 | 996.4s |
+
+> APEX I-Quality gen speed **~48% faster** than original Q8 at all prompt sizes (80 vs 54 t/s). File size 21.9 GB vs 37 GB.
+
+### 35B-A3B MoE APEX I-Balanced (alias `35b`, ~24 GB)
+
+APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor (critical layers Q6_K/Q5_K_M, middle expert layers Q4_K_M). ~24 GB overall (between Q5 and Q6 by size). KL max 4.53 — **lowest deviation among all quantizations** (even better than Q8's 9.72). imatrix calibration reduces worst-case deviation by 68%.
+
+**Optimal config: F16 KV cache.** Same UB pattern: ≤128K → UB=512; 256K → UB=256.
+
+#### F16 KV UB=512 (optimal ≤128K)
+
+| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
+|--------|----------|--------------|------|
+| p128 | 75.2 | 377.5 | 0.42s |
+| p4K | 75.7 | 903.0 | 8.51s |
+| p32K | 62.9 | 706.2 | 51.71s |
+| p64K | 56.1 | 575.9 | 120.35s |
+| p128K | 45.3 | 417.3 | 325.07s |
+| p256K | 35.8 | 240.9 | 1038.41s |
+
+#### F16 KV UB=256 (optimal 256K)
+
+| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
+|--------|----------|--------------|------|
+| p128 | 78.2 | 435.3 | 0.37s |
+| p4K | 78.9 | 731.9 | 10.50s |
+| p32K | 65.1 | 577.9 | 63.19s |
+| p64K | 56.7 | 475.7 | 145.70s |
+| p128K | 44.5 | 356.7 | 380.26s |
+| p256K | 32.0 | 246.9 | 1013.52s |
+
+> APEX I-Balanced gen speed **~40% faster** than original Q8. Quality leader: KL max 4.53 is the best among all quantizations.
+
 ### 27B Dense Q8 (Q8_K_XL, alias `278`)
 
 Dense model — all 27B params active per token. Q8_0 KV cache unlocks 256K context and dramatically improves long-context prefill.
@@ -107,17 +167,54 @@ Dense model, Q4 quantization — fastest generation among Dense models.
 
 ### Cross-Model Comparison (Optimal Configs)
 
-| Prompt | 35B MoE Q8 | 27B Q8 | 27B Q6 | 27B Q4 |
-|--------|-----------|--------|--------|--------|
-| p128 Gen | 56.7 | 13.8 | 18.9 | 26.5 |
-| p4K Gen | 56.7 | 13.4 | 17.2 | 25.1 |
-| p32K Gen | 50.1 | 12.5 | 15.8 | 20.1 |
-| p64K Gen | 46.7 | 12.1 | 14.2 | 18.4 |
-| p128K Gen | 38.0 | 10.0 | 11.2 | 14.5 |
-| p256K Gen | 29.3† | 7.3 | 8.8 | 10.4 |
-| p256K TTFT | 999s† | 3022s | 3025s | 2814s |
+| Prompt | APEX I-Q | APEX I-B | 35B Q8 | 27B Q8 | 27B Q6 | 27B Q4 |
+|--------|---------|---------|--------|--------|--------|--------|
+| p128 Gen | 84.1 | 78.2 | 56.7 | 13.8 | 18.9 | 26.5 |
+| p4K Gen | 80.3 | 78.9 | 56.7 | 13.4 | 17.2 | 25.1 |
+| p32K Gen | 62.3 | 65.1 | 50.1 | 12.5 | 15.8 | 20.1 |
+| p64K Gen | 57.2 | 56.7 | 46.7 | 12.1 | 14.2 | 18.4 |
+| p128K Gen | 47.0 | 45.3 | 38.0 | 10.0 | 11.2 | 14.5 |
+| p256K Gen | 32.9† | 32.0† | 29.3† | 7.3 | 8.8 | 10.4 |
+| p256K TTFT | 996s† | 1014s† | 999s† | 3022s | 3025s | 2814s |
 
-> Configs: 35B MoE = F16 KV (≤128K: UB=512, †256K: UB=256), 27B Q8/Q6 = Q8_0 KV UB=512, 27B Q4 = Q8_0 KV UB=1024. Gen speeds include thinking tokens.
+> Configs: APEX I-Q/I-B = F16 KV (≤128K: UB=512, †256K: UB=256), 35B Q8 = F16 KV (≤128K: UB=512, †256K: UB=256), 27B Q8/Q6 = Q8_0 KV UB=512, 27B Q4 = Q8_0 KV UB=1024. Gen speeds include thinking tokens.
+
+### Intelligence Test (35B MoE, MTP enabled)
+
+8 questions covering math, logic, CS, and philosophy. Scored by keyword matching (max 10 per question, total 80). All models use F16 KV + UB=512 + MTP (`--spec-type draft-mtp --spec-draft-n-max 3`).
+
+| Question | 35q (I-Q) | 35b (I-B) | 358 (Q8) |
+|----------|-----------|-----------|----------|
+| Gaussian sum (1+2+...+100) | 10/10 | 10/10 | 10/10 |
+| Syllogism validity | 0/10 | 4/10 | 4/10 |
+| Binary search complexity | 3/10 | 3/10 | 3/10 |
+| River crossing puzzle | 10/10 | 10/10 | 10/10 |
+| Quantum entanglement | 5/10 | **8/10** | 3/10 |
+| Definite integral ∫₀¹x²dx | 3/10 | 3/10 | 3/10 |
+| Liar paradox | 7/10 | 7/10 | **10/10** |
+| LRU cache design | 10/10 | 10/10 | 10/10 |
+| **Total** | **48/80** | **55/80** 🏆 | **53/80** |
+| Avg Gen speed | 82.3 t/s | 81.7 t/s | 57.3 t/s |
+
+> APEX I-Balanced scores highest (55/80) — lighter quantization preserves reasoning better. I-Quality is fastest but shows more reasoning errors (especially syllogism: 0/10). All three struggle with syllogism (keyword-based scoring may be strict). 358 scores 10/10 on liar paradox where APEX models get 7/10.
+
+### Vision Test (35B MoE + mmproj, MTP enabled)
+
+All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as base64 via OpenAI chat completions API. All models use F16 KV + UB=512 + MTP.
+
+| Image | Prompt tokens | Model | Gen (t/s) | MTP accept rate | Elapsed |
+|-------|-------------|-------|-----------|----------------|---------|
+| Baby sleeping (83 KB) | 939 | 35q | **73.5** | 55.8% | 16.7s |
+| | | 35b | 69.6 | 52.4% | 14.6s |
+| | | 358 | 51.2 | 50.9% | 18.3s |
+| Outdoor photo (1.4 MB) | 2059 | 35q | **69.8** | 52.3% | 22.3s |
+| | | 35b | 65.4 | 48.4% | 23.4s |
+| | | 358 | 49.3 | 48.2% | 28.4s |
+| Birthday photo (2.8 MB) | 4034 | 35q | 70.5 | 53.9% | 35.2s |
+| | | 35b | **71.1** | 56.6% | 35.2s |
+| | | 358 | 53.5 | 55.2% | 39.9s |
+
+> Vision mode MTP accept rate (48–57%) is significantly lower than text mode (60–70%), as visual tokens are harder to predict. APEX I-Quality is ~39% faster than original Q8 on vision tasks. All three models accurately describe image contents.
 
 ---
 
@@ -165,6 +262,38 @@ Dense model, Q4 quantization — fastest generation among Dense models.
 **File:** `~/model/router-preset.ini`
 
 ```ini
+[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+reasoning-format = none
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = 35q
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+reasoning-format = none
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = 35b
+
 [Qwen3.6-35B-A3B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
@@ -319,12 +448,14 @@ Router Mode serves all models from `$HOME/model/`. Only one is loaded at a time 
 
 | Model | File | Alias | Quant | Arch | Size | Active Params |
 |-------|------|-------|-------|------|------|---------------|
+| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | **35q** | APEX mixed | **MoE** | ~22 GB | 3B |
+| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | **35b** | APEX mixed | **MoE** | ~24 GB | 3B |
 | Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | Q8_K_XL | **MoE** | ~37 GB | 3B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | Q8_K_XL | Dense | ~33 GB | 27B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | Q6_K_XL | Dense | ~25 GB | 27B |
 | Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | Q4_K_XL | Dense | ~17 GB | 27B |
 
-> **Alias naming convention:** 3 digits = model size + quant level. e.g. `358` = 35B Q8, `276` = 27B Q6, `274` = 27B Q4. Both alias and full filename work in the `model` field of API requests.
+> **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. Original UD quant models use 3 digits = model size + quant level. e.g. `358` = 35B Q8, `276` = 27B Q6. Both alias and full filename work in API requests.
 
 ### 1. Cloud Nginx Configuration
 
@@ -528,7 +659,9 @@ curl https://{your_domain}/v1/chat/completions \
 
 | Command | Model |
 |---------|-------|
-| `/model 358` | 35B-A3B Q8 (MoE, fastest) |
+| `/model 35q` | 35B-A3B APEX I-Quality (MoE, fastest gen) |
+| `/model 35b` | 35B-A3B APEX I-Balanced (MoE, best quality) |
+| `/model 358` | 35B-A3B Q8 (MoE, reference) |
 | `/model 278` | 27B Q8 (Dense, highest accuracy) |
 | `/model 276` | 27B Q6 (Dense, balanced) |
 | `/model 274` | 27B Q4 (Dense, most economical) |
@@ -543,7 +676,7 @@ curl https://{your_domain}/v1/chat/completions \
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
 - [ ] `~/model/router-preset.ini` configured with model-level params + aliases
-- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns 4 models with aliases
+- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns 6 models with aliases
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
 - [ ] Alias routing: `curl -d '{"model":"358",...}'` routes to 35B-A3B Q8
 
@@ -562,4 +695,4 @@ curl https://{your_domain}/v1/chat/completions \
 
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9299 Vulkan · 2026-05-25*
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9299 Vulkan · 2026-05-26*

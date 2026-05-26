@@ -448,16 +448,24 @@ cmake --build build -j$(nproc)
 
 Router Mode serves all models from `$HOME/model/`. Only one is loaded at a time (`--models-max 1`), switching via LRU on client request. Each model has an **alias** for short-name routing.
 
-| Model | File | Alias | Quant | Arch | Size | Active Params |
-|-------|------|-------|-------|------|------|---------------|
-| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | **35q** | APEX mixed | **MoE** | ~22 GB | 3B |
-| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | **35b** | APEX mixed | **MoE** | ~24 GB | 3B |
-| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | UD-Q8_K_XL | **MoE** | ~37 GB | 3B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | UD-Q8_K_XL | Dense | ~33 GB | 27B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | UD-Q6_K_XL | Dense | ~25 GB | 27B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | UD-Q4_K_XL | Dense | ~17 GB | 27B |
+**Model sources (HuggingFace):**
 
-> **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. UD (Unsloth Dynamic) quant models use 3 digits = model size + quant level. e.g. `358` = 35B Q8, `276` = 27B Q6. Source: [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF). Both alias and full filename work in API requests.
+| Source | Short | Models | Description |
+|--------|-------|--------|-------------|
+| [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | **UD-35B** | 358 | Unsloth Dynamic quant for 35B MoE |
+| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35q, 35b | APEX adaptive-precision quant for 35B MoE |
+| [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278, 276, 274 | Unsloth Dynamic quant for 27B Dense |
+
+| Alias | File | Source | Quant | Arch | Size | Active Params |
+|-------|------|--------|-------|------|------|---------------|
+| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B |
+| **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B |
+| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B |
+| **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B |
+| **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B |
+
+> **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
 
 ### 1. Cloud Nginx Configuration
 
@@ -663,7 +671,7 @@ curl https://{your_domain}/v1/chat/completions \
 |---------|-------|
 | `/model 35q` | 35B-A3B APEX I-Quality (MoE, fastest gen) |
 | `/model 35b` | 35B-A3B APEX I-Balanced (MoE, best quality) |
-| `/model 358` | 35B-A3B Q8 (MoE, reference) |
+| `/model 358` | 35B-A3B UD-Q8 (MoE, reference) |
 | `/model 278` | 27B Q8 (Dense, highest accuracy) |
 | `/model 276` | 27B Q6 (Dense, balanced) |
 | `/model 274` | 27B Q4 (Dense, most economical) |

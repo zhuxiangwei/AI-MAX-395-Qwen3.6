@@ -448,16 +448,24 @@ cmake --build build -j$(nproc)
 
 Router Mode 从 `$HOME/model/` 提供所有模型服务。一次只加载一个模型（`--models-max 1`），通过 LRU 按需切换。每个模型配置了 **alias 别名** 便于 API 路由。
 
-| 模型 | 文件名 | 别名 | 量化 | 架构 | 大小 | 激活参数 |
-|------|--------|------|------|------|------|----------|
-| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | **35q** | APEX 混合精度 | **MoE** | ~22 GB | 3B |
-| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | **35b** | APEX 混合精度 | **MoE** | ~24 GB | 3B |
-| Qwen3.6-35B-A3B | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | **358** | UD-Q8_K_XL | **MoE** | ~37 GB | 3B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | **278** | UD-Q8_K_XL | Dense | ~33 GB | 27B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | **276** | UD-Q6_K_XL | Dense | ~25 GB | 27B |
-| Qwen3.6-27B | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | **274** | UD-Q4_K_XL | Dense | ~17 GB | 27B |
+**模型来源（HuggingFace）：**
 
-> **别名命名规则：** APEX 模型使用 `35q`/`35b` 表示质量/平衡。UD (Unsloth Dynamic) 量化模型使用 3 位数字 = 模型大小 + 量化等级。API 请求的 `model` 字段使用别名或完整文件名均可。UD 模型来源：[unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF)。
+| 来源 | 缩写 | 模型 | 描述 |
+|------|------|------|------|
+| [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | **UD-35B** | 358 | Unsloth Dynamic 量化，35B MoE |
+| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35q, 35b | APEX 自适应精度量化，35B MoE |
+| [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278, 276, 274 | Unsloth Dynamic 量化，27B Dense |
+
+| 别名 | 文件名 | 来源 | 量化 | 架构 | 大小 | 激活参数 |
+|------|--------|------|------|------|------|----------|
+| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~22 GB | 3B |
+| **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~24 GB | 3B |
+| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B |
+| **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B |
+| **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B |
+
+> **别名命名规则：** APEX 模型使用 `35q`/`35b` 表示质量/平衡。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可用于 API 请求。
 
 ### 1. 云端 Nginx 配置
 
@@ -661,7 +669,7 @@ curl https://{your_domain}/v1/chat/completions \
 |------|------|
 | `/model 35q` | 35B-A3B APEX I-Quality (MoE, 最快生成) |
 | `/model 35b` | 35B-A3B APEX I-Balanced (MoE, 最优质量) |
-| `/model 358` | 35B-A3B Q8 (MoE, 参考基线) |
+| `/model 358` | 35B-A3B UD-Q8 (MoE, 参考基线) |
 | `/model 278` | 27B Q8 (Dense, 最高精度) |
 | `/model 276` | 27B Q6 (Dense, 平衡) |
 | `/model 274` | 27B Q4 (Dense, 最省资源) |

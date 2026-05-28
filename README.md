@@ -229,7 +229,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024) |
 | No `--cache-ram` | Pinned alloc fails on unified memory and is 4.6% slower; default prompt cache is better |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost |
-| `-np 1` mandatory | MTP does not support multi-slot; 5 concurrent → 75% speed loss |
+| `parallel = 3`, `ctx-size = 786432` | 3 concurrent slots, each gets 262K context (ctx-size ÷ parallel); memory sufficient on 128 GB GTT |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
@@ -240,11 +240,11 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 
 | Constraint | Value | Reason |
 |-----------|-------|--------|
-| Max concurrent slots | 1 (`-np 1`) | **Mandatory** — MTP does not support multi-slot |
+| Max concurrent slots | 3 (`parallel = 3`) | `ctx-size` is divided by `parallel`; set `ctx-size = N × 262144` to keep 262K per slot |
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
 | Thinking mode | Enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking tokens; no performance cost |
-| Avoid concurrency | 1 request at a time | Concurrent → 75% speed loss |
+| Concurrency | Up to 3 parallel | Multi-slot supported; concurrent requests share GPU compute (~33% t/s each at full load) |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
@@ -265,7 +265,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 [Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mmproj = /home/zxw/model/mmproj-F16.gguf
@@ -273,7 +273,7 @@ mlock = 1
 numa = distribute
 reasoning-budget = 8192
 reasoning-format = none
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -282,7 +282,7 @@ alias = 35q
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mmproj = /home/zxw/model/mmproj-F16.gguf
@@ -290,7 +290,7 @@ mlock = 1
 numa = distribute
 reasoning-budget = 8192
 reasoning-format = none
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -299,14 +299,14 @@ alias = 35b
 [Qwen3.6-35B-A3B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
 reasoning-format = none
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -315,7 +315,7 @@ alias = 358
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -324,7 +324,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -333,7 +333,7 @@ alias = 278
 [Qwen3.6-27B-UD-Q6_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -342,7 +342,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -351,7 +351,7 @@ alias = 276
 [Qwen3.6-27B-UD-Q4_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -360,7 +360,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 1024
 threads = 8

@@ -23,7 +23,7 @@ import urllib.error
 
 # ── Constants ──────────────────────────────────────────────────
 CHARS_PER_TOKEN = 3.6
-DEFAULT_CTX = 262144
+DEFAULT_CTX = 786432  # parallel=3 × 262144 per slot
 DEFAULT_BATCH = 4096
 DEFAULT_THREADS = 8
 DEFAULT_REASONING_BUDGET = 8192
@@ -237,7 +237,7 @@ class LlamaServer:
             "--ubatch-size", str(self.ubatch),
             "--threads", str(self.threads),
             "--flash-attn", "on",
-            "--parallel", "1",
+            "--parallel", "3",
             "--spec-type", "draft-mtp",
             "--spec-draft-n-max", "3",
             "--mlock",

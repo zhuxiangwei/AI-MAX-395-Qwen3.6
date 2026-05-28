@@ -229,7 +229,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 按量化等级差异化 ub | 量化越高权重越大，VRAM 余量越小，需更小 ub 保证稳定性；最优 UB 因模型而异（256–1024） |
 | 不使用 `--cache-ram` | 统一内存上 pinned alloc 失败且慢 4.6%；默认 prompt cache 更优 |
 | `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失 |
-| `-np 1` 强制 | MTP 不支持多 slot，5 并发速度降 75% |
+| `parallel = 3`，`ctx-size = 786432` | 3 个并发 slot，每个分配 262K 上下文（ctx-size ÷ parallel）；128 GB GTT 内存充裕 |
 | `--spec-draft-n-max 3` | 4 比 3 慢 20.6% |
 | 全部模型 `-t 8` | 全 GPU 卸载下 t=8 vs t=16 无实质差异，t=8 更低温 |
 | 不加 `--no-mmap` | 无收益，`--mmap`（默认）+ `--mlock` 是最佳组合 |
@@ -240,11 +240,11 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 
 | 约束 | 值 | 原因 |
 |------|---|------|
-| 最大并发槽位 | 1 (`-np 1`) | **强制** — MTP 不支持多 slot |
+| 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size` 被 `parallel` 平分；设 `ctx-size = N × 262144` 保持每 slot 262K |
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
 | Thinking 模式 | 已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；无性能损失 |
-| 避免并发 | 一次一个请求 | 并发 → 速度损失 75% |
+| 并发 | 最多 3 个并行请求 | 多 slot 已启用；并发请求共享 GPU 算力（满载时每个约 33% t/s） |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
 
@@ -265,7 +265,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 [Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mmproj = /home/zxw/model/mmproj-F16.gguf
@@ -273,7 +273,7 @@ mlock = 1
 numa = distribute
 reasoning-budget = 8192
 reasoning-format = none
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -282,7 +282,7 @@ alias = 35q
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mmproj = /home/zxw/model/mmproj-F16.gguf
@@ -290,7 +290,7 @@ mlock = 1
 numa = distribute
 reasoning-budget = 8192
 reasoning-format = none
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -299,14 +299,14 @@ alias = 35b
 [Qwen3.6-35B-A3B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
 reasoning-format = none
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -315,7 +315,7 @@ alias = 358
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -324,7 +324,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -333,7 +333,7 @@ alias = 278
 [Qwen3.6-27B-UD-Q6_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -342,7 +342,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -351,7 +351,7 @@ alias = 276
 [Qwen3.6-27B-UD-Q4_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
+parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -360,7 +360,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 262144
+ctx-size = 786432
 batch-size = 4096
 ubatch-size = 1024
 threads = 8

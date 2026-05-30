@@ -246,6 +246,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
 | Thinking 模式 | 已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；无性能损失 |
+| 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 并发 | 35B 最多 3 个，27B 最多 2 个 | 多 slot 已启用；并发请求共享 GPU 算力（35B 满载时每个约 33% t/s） |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
@@ -274,7 +275,6 @@ mmproj = /home/zxw/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
@@ -291,7 +291,6 @@ mmproj = /home/zxw/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
@@ -307,7 +306,6 @@ spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
@@ -323,7 +321,6 @@ spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
@@ -341,7 +338,6 @@ spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
@@ -359,7 +355,6 @@ spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
@@ -707,6 +702,24 @@ curl https://{your_domain}/v1/chat/completions \
 
 ## 已知问题
 
+### `reasoning-format=none` 导致 SSE 客户端重复输出
+
+**状态：** 已修复——已从 `router-preset.ini` 中移除
+
+**受影响客户端：** OpenClaw/QClaw 及任何使用 `@mariozechner/pi-ai` OpenAI completions 解析器的 SSE 客户端。
+
+**现象：** 助手回复包含重复内容——思考过程和正式回答混在一起，并在下一轮对话中再次出现。
+
+**根因：** `reasoning-format=none` 让 llama-server 将思考内容放入 `delta.content`（而非标准的 `delta.reasoning_content` 字段）。OpenAI completions SSE 解析器将所有 `delta.content` 视为普通文本，创建一个同时包含思考和正式回答的单一文本块。存入对话历史后，下一轮会看到思考内容，导致模型重复输出。
+
+**验证：** 去掉 `reasoning-format=none` 后，SSE chunk 正确分离：
+- 思考 → `delta.reasoning_content` → 解析器创建独立的 `thinking` 块
+- 回答 → `delta.content` → 解析器创建 `text` 块
+
+**修复：** 从 `router-preset.ini` 所有模型 section 中删除 `reasoning-format = none`。思考内容将使用标准的 `reasoning_content` 字段。
+
+---
+
 ### Vulkan + parallel=3 + MTP 在 27B Dense 模型上崩溃
 
 **状态：** 未解决——等待上游修复（PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453)）
@@ -753,4 +766,4 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ---
 
-*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-05-30*
+*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-05-31*

@@ -229,6 +229,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024) |
 | No `--cache-ram` | Pinned alloc fails on unified memory and is 4.6% slower; default prompt cache is better |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost |
+| No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it. |
 | 35B MoE: `parallel = 3`, `ctx-size = 786432` | 3 concurrent slots, each gets 262K context (ctx-size ÷ parallel); memory sufficient on 128 GB GTT |
 | 27B Dense: `parallel = 2`, `ctx-size = 524288` | 2 concurrent slots (each 262K); `parallel = 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
@@ -246,6 +247,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
 | Thinking mode | Enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking tokens; no performance cost |
+| No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B: up to 2 | Multi-slot supported; concurrent requests share GPU compute (~33% t/s each at full load for 35B) |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
@@ -274,7 +276,6 @@ mmproj = /home/zxw/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
@@ -291,7 +292,6 @@ mmproj = /home/zxw/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
@@ -307,7 +307,6 @@ spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 ctx-size = 786432
 batch-size = 4096
 ubatch-size = 512
@@ -323,7 +322,6 @@ spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
@@ -341,7 +339,6 @@ spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
@@ -359,7 +356,6 @@ spec-draft-n-max = 3
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
-reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
 ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
@@ -709,6 +705,24 @@ curl https://{your_domain}/v1/chat/completions \
 
 ## Known Issues
 
+### `reasoning-format=none` Causes Duplicate Output in SSE Clients
+
+**Status:** Fixed — removed from `router-preset.ini`
+
+**Affected clients:** OpenClaw/QClaw and any SSE client using `@mariozechner/pi-ai` OpenAI completions parser.
+
+**Symptom:** Assistant responses contain duplicated content — the thinking process followed by the actual answer appear mixed together, then repeated in the next turn.
+
+**Root cause:** `reasoning-format=none` tells llama-server to put thinking content into `delta.content` (instead of the standard `delta.reasoning_content` field). The OpenAI completions SSE parser treats all `delta.content` as regular text, creating a single text block that contains both thinking and the actual response. When stored in conversation history, the next turn sees the thinking content, causing the model to repeat.
+
+**Verification:** Without `reasoning-format=none`, SSE chunks correctly separate:
+- Thinking → `delta.reasoning_content` → parser creates independent `thinking` block
+- Response → `delta.content` → parser creates `text` block
+
+**Fix:** Remove `reasoning-format = none` from all model sections in `router-preset.ini`. Thinking will use the standard `reasoning_content` field.
+
+---
+
 ### Vulkan + parallel=3 + MTP Crash on 27B Dense Models
 
 **Status:** Open — waiting for upstream fix (PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453))
@@ -755,4 +769,4 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-05-30*
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-05-31*

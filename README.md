@@ -229,7 +229,8 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024) |
 | No `--cache-ram` | Pinned alloc fails on unified memory and is 4.6% slower; default prompt cache is better |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost |
-| `parallel = 3`, `ctx-size = 786432` | 3 concurrent slots, each gets 262K context (ctx-size ÷ parallel); memory sufficient on 128 GB GTT |
+| 35B MoE: `parallel = 3`, `ctx-size = 786432` | 3 concurrent slots, each gets 262K context (ctx-size ÷ parallel); memory sufficient on 128 GB GTT |
+| 27B Dense: `parallel = 2`, `ctx-size = 524288` | 2 concurrent slots (each 262K); `parallel = 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
@@ -240,11 +241,12 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 
 | Constraint | Value | Reason |
 |-----------|-------|--------|
-| Max concurrent slots | 3 (`parallel = 3`) | `ctx-size` is divided by `parallel`; set `ctx-size = N × 262144` to keep 262K per slot |
+| 35B MoE max concurrent slots | 3 (`parallel = 3`) | `ctx-size = 786432` (786432 ÷ 3 = 262K per slot) |
+| 27B Dense max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); `parallel = 3` triggers Vulkan bug |
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
 | Thinking mode | Enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking tokens; no performance cost |
-| Concurrency | Up to 3 parallel | Multi-slot supported; concurrent requests share GPU compute (~33% t/s each at full load) |
+| Concurrency | 35B: up to 3, 27B: up to 2 | Multi-slot supported; concurrent requests share GPU compute (~33% t/s each at full load for 35B) |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
@@ -315,7 +317,7 @@ alias = 358
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 3
+parallel = 2           ; ⚠ 3 triggers Vulkan bug (see Known Issues)
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -324,7 +326,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 786432
+ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -333,7 +335,7 @@ alias = 278
 [Qwen3.6-27B-UD-Q6_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 3
+parallel = 2           ; ⚠ 3 triggers Vulkan bug (see Known Issues)
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -342,7 +344,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 786432
+ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -351,7 +353,7 @@ alias = 276
 [Qwen3.6-27B-UD-Q4_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 3
+parallel = 2           ; ⚠ 3 triggers Vulkan bug (see Known Issues)
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -360,7 +362,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 786432
+ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
 batch-size = 4096
 ubatch-size = 1024
 threads = 8
@@ -418,7 +420,7 @@ alias = 274
 |-----------|-------------------|
 | Inference OS | Ubuntu 26.04 LTS |
 | Cloud OS | Ubuntu 24.04.4 LTS |
-| llama.cpp | b9299 (commit b22ff4b7b, Vulkan backend) |
+| llama.cpp | b9401 (commit 751ebd17a, Vulkan backend) |
 | Build options | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` (+ BLAS/OpenMP/LTO/NATIVE) |
 | Vulkan runtime | 1.4.341 |
 | API protocol | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) |
@@ -705,4 +707,52 @@ curl https://{your_domain}/v1/chat/completions \
 
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9299 Vulkan · 2026-05-26*
+## Known Issues
+
+### Vulkan + parallel=3 + MTP Crash on 27B Dense Models
+
+**Status:** Open — waiting for upstream fix (PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453))
+
+**Affected models:** 27B Dense series (aliases `278`/`276`/`274`). 35B MoE models (aliases `358`/`35q`/`35b`) are **not** affected.
+
+**Symptom:** `llama-server` aborts with `GGML_ASSERT` failure when processing any request on 27B Dense models with `parallel ≥ 3` and MTP enabled.
+
+**Reproduction:**
+```ini
+# router-preset.ini — triggers the crash
+[Qwen3.6-27B-UD-Q8_K_XL]
+parallel = 3
+spec-type = draft-mtp
+spec-draft-n-max = 3
+ctx-size = 786432
+# ... other params
+```
+
+**Crash output:**
+```
+/home/zxw/llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
+```
+
+**Root cause:** Vulkan backend uses device-only (unified) memory buffers. Per-slot KV cache tensors have `tensor->data == NULL` on the host side (data lives on GPU). `ggml_backend_tensor_get()` and related functions unconditionally assert `tensor->data != NULL`, which fails when the prompt cache system attempts to save/restore slot state (including MTP draft context). The crash occurs in two paths:
+
+1. **Direct path:** `ggml_backend_tensor_get()` — `ggml-backend.cpp:348`
+2. **MTP draft path:** `common_prompt_checkpoint::update_dft()` → `llama_context::state_seq_get_data()` → `llama_io_write_host` — `common.cpp:2082`
+
+**Affected code** (`ggml/src/ggml-backend.cpp`, 11 occurrences):
+```cpp
+// Line 348 — one of 11 identical assertions that fail on Vulkan unified memory
+GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
+```
+
+**Workaround attempted:** `--kv-unified` bypasses crash path #1 but **not** crash path #2 (MTP draft checkpoint). Not viable.
+
+**Current mitigation:** Reduce `parallel` to 2 for all 27B Dense models. This avoids the crash at the cost of one fewer concurrent slot.
+
+**Upstream tracking:**
+- Issue [#19839](https://github.com/ggml-org/llama.cpp/issues/19839) — original bug report
+- PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453) — proposed fix (add NULL check before assert, delegate to backend `get_tensor`); closed but not merged
+- As of b9401 (commit `751ebd17a`), all 11 assert locations remain unchanged in `ggml-backend.cpp`
+
+---
+
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-05-30*

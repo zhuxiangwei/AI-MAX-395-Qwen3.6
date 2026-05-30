@@ -229,7 +229,8 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 按量化等级差异化 ub | 量化越高权重越大，VRAM 余量越小，需更小 ub 保证稳定性；最优 UB 因模型而异（256–1024） |
 | 不使用 `--cache-ram` | 统一内存上 pinned alloc 失败且慢 4.6%；默认 prompt cache 更优 |
 | `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失 |
-| `parallel = 3`，`ctx-size = 786432` | 3 个并发 slot，每个分配 262K 上下文（ctx-size ÷ parallel）；128 GB GTT 内存充裕 |
+| 35B MoE: `parallel = 3`，`ctx-size = 786432` | 3 个并发 slot，每个分配 262K 上下文（ctx-size ÷ parallel）；128 GB GTT 内存充裕 |
+| 27B Dense: `parallel = 2`，`ctx-size = 524288` | 2 个并发 slot（每个 262K）；`parallel = 3` 在 27B Dense 上触发 Vulkan bug（见已知问题） |
 | `--spec-draft-n-max 3` | 4 比 3 慢 20.6% |
 | 全部模型 `-t 8` | 全 GPU 卸载下 t=8 vs t=16 无实质差异，t=8 更低温 |
 | 不加 `--no-mmap` | 无收益，`--mmap`（默认）+ `--mlock` 是最佳组合 |
@@ -240,11 +241,12 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 
 | 约束 | 值 | 原因 |
 |------|---|------|
-| 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size` 被 `parallel` 平分；设 `ctx-size = N × 262144` 保持每 slot 262K |
+| 35B MoE 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 786432`（786432 ÷ 3 = 每 slot 262K） |
+| 27B Dense 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
 | Thinking 模式 | 已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；无性能损失 |
-| 并发 | 最多 3 个并行请求 | 多 slot 已启用；并发请求共享 GPU 算力（满载时每个约 33% t/s） |
+| 并发 | 35B 最多 3 个，27B 最多 2 个 | 多 slot 已启用；并发请求共享 GPU 算力（35B 满载时每个约 33% t/s） |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
 
@@ -315,7 +317,7 @@ alias = 358
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 3
+parallel = 2           ; ⚠ 3 触发 Vulkan bug（见已知问题）
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -324,7 +326,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 786432
+ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -333,7 +335,7 @@ alias = 278
 [Qwen3.6-27B-UD-Q6_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 3
+parallel = 2           ; ⚠ 3 触发 Vulkan bug（见已知问题）
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -342,7 +344,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 786432
+ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -351,7 +353,7 @@ alias = 276
 [Qwen3.6-27B-UD-Q4_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 3
+parallel = 2           ; ⚠ 3 触发 Vulkan bug（见已知问题）
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -360,7 +362,7 @@ reasoning-budget = 8192
 reasoning-format = none
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 786432
+ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
 batch-size = 4096
 ubatch-size = 1024
 threads = 8
@@ -418,7 +420,7 @@ alias = 274
 |------|------------|
 | 推理机系统 | Ubuntu 26.04 LTS |
 | 云端系统 | Ubuntu 24.04.4 LTS |
-| llama.cpp | b9299 (commit b22ff4b7b, Vulkan 后端) |
+| llama.cpp | b9401 (commit 751ebd17a, Vulkan 后端) |
 | 编译选项 | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release`（+ BLAS/OpenMP/LTO/NATIVE） |
 | Vulkan 运行时 | 1.4.341 |
 | API 协议 | OpenAI 兼容 (`/v1/chat/completions`, `/v1/models`) |
@@ -703,4 +705,52 @@ curl https://{your_domain}/v1/chat/completions \
 
 ---
 
-*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9299 Vulkan · 2026-05-26*
+## 已知问题
+
+### Vulkan + parallel=3 + MTP 在 27B Dense 模型上崩溃
+
+**状态：** 未解决——等待上游修复（PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453)）
+
+**受影响模型：** 27B Dense 系列（别名 `278`/`276`/`274`）。35B MoE 模型（别名 `358`/`35q`/`35b`）**不受**影响。
+
+**现象：** 27B Dense 模型在 `parallel ≥ 3` 且启用 MTP 时，处理任何请求都会触发 `GGML_ASSERT` 导致 `llama-server` abort。
+
+**复现：**
+```ini
+# router-preset.ini — 触发崩溃
+[Qwen3.6-27B-UD-Q8_K_XL]
+parallel = 3
+spec-type = draft-mtp
+spec-draft-n-max = 3
+ctx-size = 786432
+# ... 其他参数
+```
+
+**崩溃输出：**
+```
+/home/zxw/llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
+```
+
+**根因：** Vulkan 后端使用 device-only（统一内存）缓冲区。每个 slot 的 KV cache tensor 在 host 端 `tensor->data == NULL`（数据在 GPU 上）。`ggml_backend_tensor_get()` 及相关函数无条件断言 `tensor->data != NULL`，当 prompt cache 系统尝试保存/恢复 slot 状态（包括 MTP draft context）时触发崩溃。崩溃发生在两条路径：
+
+1. **直接路径：** `ggml_backend_tensor_get()` — `ggml-backend.cpp:348`
+2. **MTP draft 路径：** `common_prompt_checkpoint::update_dft()` → `llama_context::state_seq_get_data()` → `llama_io_write_host` — `common.cpp:2082`
+
+**受影响代码**（`ggml/src/ggml-backend.cpp`，共 11 处）：
+```cpp
+// 第 348 行 — 11 处相同断言之一，在 Vulkan 统一内存上失败
+GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
+```
+
+**尝试的 workaround：** `--kv-unified` 可绕过崩溃路径 #1，但**无法绕过**崩溃路径 #2（MTP draft checkpoint）。不可行。
+
+**当前缓解措施：** 所有 27B Dense 模型 `parallel` 降为 2。牺牲一个并发 slot 以避免崩溃。
+
+**上游追踪：**
+- Issue [#19839](https://github.com/ggml-org/llama.cpp/issues/19839) — 原始 bug 报告
+- PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453) — 提议修复（在 assert 前增加 NULL 检查，委托给 backend `get_tensor`）；已关闭但未合入
+- 截至版本 b9401（commit `751ebd17a`），`ggml-backend.cpp` 中全部 11 处断言均未修改
+
+---
+
+*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-05-30*

@@ -660,16 +660,80 @@ curl https://{your_domain}/v1/chat/completions \
   -d '{"model": "Qwen3.6-35B-A3B-UD-Q8_K_XL", ...}'
 ```
 
-**QClaw 集成：**
+### 客户端集成
 
-| 命令 | 模型 |
-|------|------|
-| `/model 35q` | 35B-A3B APEX I-Quality (MoE, 最快生成) |
-| `/model 35b` | 35B-A3B APEX I-Balanced (MoE, 最优质量) |
-| `/model 358` | 35B-A3B UD-Q8 (MoE, 参考基线) |
-| `/model 278` | 27B Q8 (Dense, 最高精度) |
-| `/model 276` | 27B Q6 (Dense, 平衡) |
-| `/model 274` | 27B Q4 (Dense, 最省资源) |
+#### Hermes Agent
+
+[Hermes](https://github.com/nicobailon/hermes-agent) v0.15.1 — 终端 AI Agent，支持 TUI、oneshot 模式、多平台 Gateway（Telegram/Discord/钉钉/飞书/企微/QQ/微信等）、MCP、Skills 和 cron 调度。
+
+**安装路径：** WSL Ubuntu 26.04 上的 `~/.hermes/`
+
+**配置文件：** `~/.hermes/config.yaml`
+
+```yaml
+providers:
+  local-llm:
+    name: "Local LLM (Strix Halo)"
+    base_url: "https://dashenzhiyan.com/v1"
+    key_env: "DASHENZHIYAN_API_KEY"
+    extra_body:
+      chat_template_kwargs:    # 启用思考模式控制
+    models:
+      "358":
+        context_length: 262144
+        max_output_tokens: 32768
+        supports_vision: true
+      "278":
+        context_length: 262144
+        max_output_tokens: 32768
+      "276":
+        context_length: 262144
+        max_output_tokens: 32768
+      "274":
+        context_length: 262144
+        max_output_tokens: 32768
+      "35q":
+        context_length: 262144
+        max_output_tokens: 32768
+        supports_vision: true
+      "35b":
+        context_length: 262144
+        max_output_tokens: 32768
+        supports_vision: true
+
+model:
+  default: "358"
+  provider: "custom:local-llm"
+  base_url: "https://dashenzhiyan.com/v1"
+max_tokens: 8192
+```
+
+**配置要点：**
+- `provider: "custom:local-llm"` 走命名 providers 解析路径（`"custom"` direct-alias 会忽略 `extra_body`）
+- `key_env: "DASHENZHIYAN_API_KEY"` — API key 环境变量名从域名推导，需在 `~/.hermes/.env` 中设置
+- `supports_vision: true` 仅 35B MoE 模型（358/35q/35b 配置了 mmproj）；27B Dense 无视觉能力
+- `max_output_tokens: 32768` — 不设置则 Hermes 默认 4096，长回复会被截断
+- `chat_template_kwargs:` （空值）启用思考模式；其下设 `enable_thinking: false` 可强制关闭
+
+**使用方式：**
+```bash
+wsl                                    # 进入 WSL
+hermes                                 # TUI 模式（交互式）
+hermes -z '快速问题'                    # oneshot 模式
+hermes -z '问题' --model 35q           # 指定模型的 oneshot
+```
+
+**TUI 常用命令：** `/model 358` 切换模型、`/skills` 查看技能、`/help` 全部命令、`Ctrl+C` 中断回复、`Ctrl+D` 或 `/exit` 退出。
+
+#### QClaw
+
+QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webchat）。
+
+**Provider 配置**（`~/.qclaw/openclaw.json`）：
+- `myllm` provider → `https://dashenzhiyan.com/v1/`，6 个模型（358/278/276/274/35q/35b）
+- 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启
+- `injectNumCtxForOpenAICompat: false`
+- 默认模型：`qclaw/pool-glm-5.1`（云端代理）；xiaowei agent 使用 `myllm/358`
 
 ### 验证清单
 

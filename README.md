@@ -663,16 +663,80 @@ curl https://{your_domain}/v1/chat/completions \
   -d '{"model": "Qwen3.6-35B-A3B-UD-Q8_K_XL", ...}'
 ```
 
-**QClaw integration:**
+### Client Integration
 
-| Command | Model |
-|---------|-------|
-| `/model 35q` | 35B-A3B APEX I-Quality (MoE, fastest gen) |
-| `/model 35b` | 35B-A3B APEX I-Balanced (MoE, best quality) |
-| `/model 358` | 35B-A3B UD-Q8 (MoE, reference) |
-| `/model 278` | 27B Q8 (Dense, highest accuracy) |
-| `/model 276` | 27B Q6 (Dense, balanced) |
-| `/model 274` | 27B Q4 (Dense, most economical) |
+#### Hermes Agent
+
+[Hermes](https://github.com/nicobailon/hermes-agent) v0.15.1 — terminal AI agent with TUI, oneshot mode, multi-platform Gateway, MCP, Skills, and cron scheduling.
+
+**Install path:** `~/.hermes/` on WSL Ubuntu 26.04
+
+**Config file:** `~/.hermes/config.yaml`
+
+```yaml
+providers:
+  local-llm:
+    name: "Local LLM (Strix Halo)"
+    base_url: "https://dashenzhiyan.com/v1"
+    key_env: "DASHENZHIYAN_API_KEY"
+    extra_body:
+      chat_template_kwargs:    # enables thinking mode control
+    models:
+      "358":
+        context_length: 262144
+        max_output_tokens: 32768
+        supports_vision: true
+      "278":
+        context_length: 262144
+        max_output_tokens: 32768
+      "276":
+        context_length: 262144
+        max_output_tokens: 32768
+      "274":
+        context_length: 262144
+        max_output_tokens: 32768
+      "35q":
+        context_length: 262144
+        max_output_tokens: 32768
+        supports_vision: true
+      "35b":
+        context_length: 262144
+        max_output_tokens: 32768
+        supports_vision: true
+
+model:
+  default: "358"
+  provider: "custom:local-llm"
+  base_url: "https://dashenzhiyan.com/v1"
+max_tokens: 8192
+```
+
+**Key configuration notes:**
+- `provider: "custom:local-llm"` uses the named providers section (not `"custom"` direct-alias, which ignores `extra_body`)
+- `key_env: "DASHENZHIYAN_API_KEY"` — API key derived from domain name; must be set in `~/.hermes/.env`
+- `supports_vision: true` on 35B MoE models (358/35q/35b have mmproj); 27B Dense models have no vision
+- `max_output_tokens: 32768` per model — without this, Hermes defaults to 4096 and truncates long responses
+- `chat_template_kwargs:` (empty) enables thinking mode; with `enable_thinking: false` under it, forces thinking off
+
+**Usage:**
+```bash
+wsl                                    # enter WSL
+hermes                                 # TUI mode (interactive)
+hermes -z 'quick question'             # oneshot mode
+hermes -z 'question' --model 35q       # oneshot with specific model
+```
+
+**TUI commands:** `/model 358` switch model, `/skills` list skills, `/help` all commands, `Ctrl+C` interrupt, `Ctrl+D` or `/exit` quit.
+
+#### QClaw
+
+QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, QQ, webchat).
+
+**Provider config** (`~/.qclaw/openclaw.json`):
+- `myllm` provider → `https://dashenzhiyan.com/v1/`, 6 models (358/278/276/274/35q/35b)
+- Per-model: `contextWindow: 262144`, `maxTokens: 32768`, reasoning enabled
+- `injectNumCtxForOpenAICompat: false`
+- Default model: `qclaw/pool-glm-5.1` (cloud proxy); xiaowei agent uses `myllm/358`
 
 ### Verification Checklist
 

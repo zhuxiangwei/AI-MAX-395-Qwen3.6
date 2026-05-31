@@ -495,9 +495,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
 
         # 长超时（LLM 推理耗时，匹配 llama-server 超时）
-        proxy_read_timeout 3600s;
+        proxy_read_timeout 600s;
         proxy_connect_timeout 60s;
-        proxy_send_timeout 3600s;
+        proxy_send_timeout 600s;
 
         # SSE 流式响应支持
         proxy_set_header Connection '';
@@ -626,7 +626,7 @@ ExecStart=/home/zxw/llama/llama.cpp/build/bin/llama-server \
     --models-max 1 \
     --models-preset /home/zxw/model/router-preset.ini \
     --sleep-idle-seconds 600 \
-    --timeout 3600 \
+    --timeout 600 \
     --metrics
 Restart=on-failure
 RestartSec=10
@@ -677,10 +677,11 @@ providers:
     base_url: "https://dashenzhiyan.com/v1"
     key_env: "DASHENZHIYAN_API_KEY"
     extra_body:
-      chat_template_kwargs:    # 启用思考模式控制
+      chat_template_kwargs:
+        enable_thinking: true       # 启用思考模式
     models:
       "358":
-        context_length: 262144
+        context_length: 262144     # 每 slot 上下文（ctx-size ÷ parallel）
         max_output_tokens: 32768
         supports_vision: true
       "278":
@@ -700,12 +701,24 @@ providers:
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true
+    request_timeout_seconds: 3600  # API 请求超时
+    stale_timeout_seconds: 900    # 非流式停滞检测
 
 model:
   default: "358"
   provider: "custom:local-llm"
   base_url: "https://dashenzhiyan.com/v1"
-max_tokens: 8192
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: true
+max_tokens: 32768                 # 必须 ≥ reasoning-budget + 预期输出
+
+streaming:
+  enabled: true                  # Gateway Bot 流式输出（editMessage）
+
+compression:
+  threshold: 0.80                # 80% 上下文使用率时触发压缩
+  target_ratio: 0.30             # 压缩后保留 30% 阈值作为最近上下文
 ```
 
 **配置要点：**
@@ -713,7 +726,13 @@ max_tokens: 8192
 - `key_env: "DASHENZHIYAN_API_KEY"` — API key 环境变量名从域名推导，需在 `~/.hermes/.env` 中设置
 - `supports_vision: true` 仅 35B MoE 模型（358/35q/35b 配置了 mmproj）；27B Dense 无视觉能力
 - `max_output_tokens: 32768` — 不设置则 Hermes 默认 4096，长回复会被截断
-- `chat_template_kwargs:` （空值）启用思考模式；其下设 `enable_thinking: false` 可强制关闭
+- `max_tokens: 32768` — 必须 ≥ `reasoning-budget`（8192）+ 预期输出；8192 会导致 thinking token 耗尽全部配额，截断 tool_calls 和回复
+- `chat_template_kwargs: enable_thinking: true` — 启用 Qwen3.6 思考模式；省略或设 `false` 可关闭
+- `streaming.enabled: true` — 启用 Gateway Bot 流式输出（Telegram/Discord/Slack 的 editMessageText）
+- `compression.threshold: 0.80` — 本地推理无 token 成本，延迟压缩触发；0.50 过于激进
+- `compression.target_ratio: 0.30` — 压缩后保留 0.80 × 0.30 × 262K ≈ 63K tokens 近期上下文
+- `request_timeout_seconds: 3600` — 思考模式需长超时（thinking 45–130s + 生成最多 300s）
+- `context_length: 262144` 对所有模型 — 这是**每 slot** 上下文（ctx-size ÷ parallel），不是总 ctx-size
 
 **使用方式：**
 ```bash

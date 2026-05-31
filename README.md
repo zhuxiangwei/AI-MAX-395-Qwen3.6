@@ -496,9 +496,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
 
         # Long timeout (LLM inference is slow, match llama-server timeout)
-        proxy_read_timeout 3600s;
+        proxy_read_timeout 600s;
         proxy_connect_timeout 60s;
-        proxy_send_timeout 3600s;
+        proxy_send_timeout 600s;
 
         # SSE streaming support
         proxy_set_header Connection '';
@@ -629,7 +629,7 @@ ExecStart=/home/zxw/llama/llama.cpp/build/bin/llama-server \
     --models-max 1 \
     --models-preset /home/zxw/model/router-preset.ini \
     --sleep-idle-seconds 600 \
-    --timeout 3600 \
+    --timeout 600 \
     --metrics
 Restart=on-failure
 RestartSec=10
@@ -680,10 +680,11 @@ providers:
     base_url: "https://dashenzhiyan.com/v1"
     key_env: "DASHENZHIYAN_API_KEY"
     extra_body:
-      chat_template_kwargs:    # enables thinking mode control
+      chat_template_kwargs:
+        enable_thinking: true       # enables thinking mode
     models:
       "358":
-        context_length: 262144
+        context_length: 262144     # per-slot context (ctx-size ÷ parallel)
         max_output_tokens: 32768
         supports_vision: true
       "278":
@@ -703,12 +704,24 @@ providers:
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true
+    request_timeout_seconds: 3600  # API request timeout
+    stale_timeout_seconds: 900    # non-stream stale detection
 
 model:
   default: "358"
   provider: "custom:local-llm"
   base_url: "https://dashenzhiyan.com/v1"
-max_tokens: 8192
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: true
+max_tokens: 32768                 # must ≥ reasoning-budget + expected output
+
+streaming:
+  enabled: true                  # gateway bot streaming (editMessage)
+
+compression:
+  threshold: 0.80                # trigger compression at 80% context
+  target_ratio: 0.30             # keep 30% of threshold as recent tail
 ```
 
 **Key configuration notes:**
@@ -716,7 +729,13 @@ max_tokens: 8192
 - `key_env: "DASHENZHIYAN_API_KEY"` — API key derived from domain name; must be set in `~/.hermes/.env`
 - `supports_vision: true` on 35B MoE models (358/35q/35b have mmproj); 27B Dense models have no vision
 - `max_output_tokens: 32768` per model — without this, Hermes defaults to 4096 and truncates long responses
-- `chat_template_kwargs:` (empty) enables thinking mode; with `enable_thinking: false` under it, forces thinking off
+- `max_tokens: 32768` — must be ≥ `reasoning-budget` (8192) + expected output; 8192 caused thinking tokens to consume the entire budget, truncating tool calls and responses
+- `chat_template_kwargs: enable_thinking: true` — enables Qwen3.6 thinking mode; omit or set `false` to disable
+- `streaming.enabled: true` — enables Gateway bot streaming (editMessageText on Telegram/Discord/Slack)
+- `compression.threshold: 0.80` — local inference has no token cost, so delay compression; 0.50 is too aggressive
+- `compression.target_ratio: 0.30` — after compression, keep 0.80 × 0.30 × 262K ≈ 63K tokens of recent context
+- `request_timeout_seconds: 3600` — long timeout for thinking mode (45–130s thinking + up to 300s generation)
+- `context_length: 262144` for all models — this is **per-slot** context (ctx-size ÷ parallel), not total ctx-size
 
 **Usage:**
 ```bash

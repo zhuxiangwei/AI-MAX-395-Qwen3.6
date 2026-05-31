@@ -260,7 +260,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 
 | 范围 | 位置 | 示例 |
 |------|------|------|
-| **服务级** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--sleep-idle-seconds`, `--timeout` |
+| **服务级** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout` |
 | **模型级** | `router-preset.ini` 每模型 section | `n-gpu-layers`, `ctx-size`, `ubatch-size`, `threads`, `alias`, `spec-type`, `mlock`, `numa`, ... |
 
 > 模型参数**仅在 INI 中定义**，不在 service 文件中重复。
@@ -632,7 +632,6 @@ ExecStart=/home/zxw/llama/llama.cpp/build/bin/llama-server \
     --models-dir /home/zxw/model \
     --models-max 2 \
     --models-preset /home/zxw/model/router-preset.ini \
-    --sleep-idle-seconds 600 \
     --timeout 600 \
     --metrics
 Restart=on-failure

@@ -261,7 +261,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 
 | Scope | Where | Examples |
 |-------|-------|---------|
-| **Server-level** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--sleep-idle-seconds`, `--timeout` |
+| **Server-level** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout` |
 | **Model-level** | `router-preset.ini` per-model section | `n-gpu-layers`, `ctx-size`, `ubatch-size`, `threads`, `alias`, `spec-type`, `mlock`, `numa`, ... |
 
 > Model parameters are defined **only** in the INI — never duplicated in the service file.
@@ -635,7 +635,6 @@ ExecStart=/home/zxw/llama/llama.cpp/build/bin/llama-server \
     --models-dir /home/zxw/model \
     --models-max 2 \
     --models-preset /home/zxw/model/router-preset.ini \
-    --sleep-idle-seconds 600 \
     --timeout 600 \
     --metrics
 Restart=on-failure

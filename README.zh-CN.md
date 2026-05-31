@@ -42,9 +42,9 @@
 
 > Gen 速度在 UB=256/512 间几乎相同（±2 t/s）。UB 选择主要影响 prefill/TTFT：UB=512 在 ≤128K 更快；UB=256 在 256K 更快。
 
-### 35B-A3B MoE APEX I-Quality (别名 `35q`, ~22 GB)
+### 35B-A3B MoE APEX I-Quality (别名 `aux`, ~22 GB)
 
-APEX 量化——针对 MoE 的自适应精度策略。混合精度 per tensor（关键层 Q6_K/Q8_0，中间 expert 层 Q4_K_M）。整体 ~22 GB（按体积介于 Q4~Q5，但质量接近 Q8）。imatrix 多样化校准。**比 UD-Q8+MTP 快 48%，体积仅 59%。**
+APEX 量化——针对 MoE 的自适应精度策略。混合精度 per tensor（关键层 Q6_K/Q8_0，中间 expert 层 Q4_K_M）。整体 ~22 GB（按体积介于 Q4~Q5，但质量接近 Q8）。imatrix 多样化校准。**比 UD-Q8+MTP 快 48%，体积仅 59%。** 现已改造为**辅助模型**（`aux`）：禁用 reasoning，紧凑上下文（每 slot 64K），保留 mmproj 支持视觉任务。
 
 **最优配置：F16 KV cache。** 与 35B UD-Q8 规律一致：≤128K → UB=512（prefill +15~23%）；256K → UB=256（prefill 比 UB=512 慢 4%）。
 
@@ -183,7 +183,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 
 8 道题覆盖数学、逻辑、计算机科学和哲学。基于关键词匹配评分（每题满分 10，总分 80）。所有模型使用 F16 KV + UB=512 + MTP（`--spec-type draft-mtp --spec-draft-n-max 3`）。
 
-| 题目 | 35q (I-Q) | 35b (I-B) | 358 (Q8) |
+| 题目 | aux (I-Q) | 35b (I-B) | 358 (Q8) |
 |------|-----------|-----------|----------|
 | 高斯求和 (1+2+...+100) | 10/10 | 10/10 | 10/10 |
 | 三段论有效性 | 0/10 | 4/10 | 4/10 |
@@ -204,13 +204,13 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 
 | 图片 | Prompt tokens | 模型 | Gen (t/s) | MTP 命中率 | 耗时 |
 |------|-------------|------|-----------|-----------|------|
-| 婴儿趴睡 (83 KB) | 939 | 35q | **73.5** | 55.8% | 16.7s |
+| 婴儿趴睡 (83 KB) | 939 | aux | **73.5** | 55.8% | 16.7s |
 | | | 35b | 69.6 | 52.4% | 14.6s |
 | | | 358 | 51.2 | 50.9% | 18.3s |
-| 户外照片 (1.4 MB) | 2059 | 35q | **69.8** | 52.3% | 22.3s |
+| 户外照片 (1.4 MB) | 2059 | aux | **69.8** | 52.3% | 22.3s |
 | | | 35b | 65.4 | 48.4% | 23.4s |
 | | | 358 | 49.3 | 48.2% | 28.4s |
-| 生日照片 (2.8 MB) | 4034 | 35q | 70.5 | 53.9% | 35.2s |
+| 生日照片 (2.8 MB) | 4034 | aux | 70.5 | 53.9% | 35.2s |
 | | | 35b | **71.1** | 56.6% | 35.2s |
 | | | 358 | 53.5 | 55.2% | 39.9s |
 
@@ -228,8 +228,11 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 统一 256K 上下文 | -c 只预分配 KV cache，不影响性能；一套配置覆盖所有 prompt 长度 |
 | 按量化等级差异化 ub | 量化越高权重越大，VRAM 余量越小，需更小 ub 保证稳定性；最优 UB 因模型而异（256–1024） |
 | 不使用 `--cache-ram` | 统一内存上 pinned alloc 失败且慢 4.6%；默认 prompt cache 更优 |
-| `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失 |
-| 35B MoE: `parallel = 3`，`ctx-size = 786432` | 3 个并发 slot，每个分配 262K 上下文（ctx-size ÷ parallel）；128 GB GTT 内存充裕 |
+| `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失（仅主模型） |
+| `reasoning = off` 用于 aux | 辅助模型完全禁用 thinking；`reasoning-budget = 0` 单独不生效，必须配合 `reasoning = off` |
+| 双模型模式 (`models-max 2`) | 主模型 + aux 共存；aux 处理 Hermes 辅助任务（视觉、标题生成、压缩等），无需模型切换 |
+| 35B MoE: `parallel = 3`，`ctx-size = 786432` | 3 个并发 slot，每个分配 262K 上下文（ctx-size ÷ parallel）；128 GB GTT 内存充裕（主模型） |
+| aux: `parallel = 3`，`ctx-size = 196608` | 3 个并发 slot，每个分配 64K 上下文；辅助任务不需要长上下文；比 786432 省 ~17 GB KV cache |
 | 27B Dense: `parallel = 2`，`ctx-size = 524288` | 2 个并发 slot（每个 262K）；`parallel = 3` 在 27B Dense 上触发 Vulkan bug（见已知问题） |
 | `--spec-draft-n-max 3` | 4 比 3 慢 20.6% |
 | 全部模型 `-t 8` | 全 GPU 卸载下 t=8 vs t=16 无实质差异，t=8 更低温 |
@@ -245,8 +248,10 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 27B Dense 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
-| Thinking 模式 | 已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；无性能损失 |
+| Thinking 模式 | 主模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；无性能损失 |
+| | aux：已禁用（`reasoning=off`, `reasoning-budget=0`） | 辅助任务不需要 thinking；`reasoning-budget=0` 单独不生效，必须配合 `reasoning=off` |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
+| 双模型并发 | `models-max 2` | 主模型 + aux 共存；GTT ~66 GB（37 GB 主 + 29 GB aux）。并发共享 GPU 算力 |
 | 并发 | 35B 最多 3 个，27B 最多 2 个 | 多 slot 已启用；并发请求共享 GPU 算力（35B 满载时每个约 33% t/s） |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
@@ -271,15 +276,17 @@ flash-attn = 1
 parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
-mmproj = /home/zxw/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
-reasoning-budget = 8192
-ctx-size = 786432
+# 辅助模型配置：无 thinking，紧凑 ctx，保留 mmproj 支持视觉
+mmproj = /home/zxw/model/mmproj-F16.gguf
+reasoning = off
+reasoning-budget = 0
+ctx-size = 196608       ; 196608 ÷ 3 = 每 slot 64K（辅助任务不需要长上下文）
 batch-size = 4096
 ubatch-size = 512
 threads = 8
-alias = 35q
+alias = aux
 
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
 n-gpu-layers = 99
@@ -443,26 +450,26 @@ cmake --build build -j$(nproc)
 
 ### 模型清单
 
-Router Mode 从 `$HOME/model/` 提供所有模型服务。一次只加载一个模型（`--models-max 1`），通过 LRU 按需切换。每个模型配置了 **alias 别名** 便于 API 路由。
+Router Mode 从 `$HOME/model/` 提供所有模型服务。可同时加载两个模型（`--models-max 2`）：一个主模型 + `aux` 辅助模型。主模型通过 LRU 按需切换。每个模型配置了 **alias 别名** 便于 API 路由。
 
 **模型来源（HuggingFace）：**
 
 | 来源 | 缩写 | 模型 | 描述 |
 |------|------|------|------|
 | [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | **UD-35B** | 358 | Unsloth Dynamic 量化，35B MoE |
-| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35q, 35b | APEX 自适应精度量化，35B MoE |
+| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | aux, 35b | APEX 自适应精度量化，35B MoE |
 | [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278, 276, 274 | Unsloth Dynamic 量化，27B Dense |
 
-| 别名 | 文件名 | 来源 | 量化 | 架构 | 大小 | 激活参数 |
-|------|--------|------|------|------|------|----------|
-| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~22 GB | 3B |
-| **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~24 GB | 3B |
-| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B |
-| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B |
-| **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B |
-| **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B |
+| 别名 | 文件名 | 来源 | 量化 | 架构 | 大小 | 激活参数 | 角色 |
+|------|--------|------|------|------|------|----------|------|
+| **aux** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~22 GB | 3B | 辅助（视觉 + 短任务） |
+| **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~24 GB | 3B | 主力（质量） |
+| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | 主力（最快） |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | 主力（默认） |
+| **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | 主力 |
+| **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | 主力 |
 
-> **别名命名规则：** APEX 模型使用 `35q`/`35b` 表示质量/平衡。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可用于 API 请求。
+> **别名命名规则：** APEX 辅助模型使用 `aux` 用于 Hermes 辅助任务（视觉、标题生成等——禁用 reasoning，紧凑上下文）。APEX 主模型使用 `35b` 表示平衡。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可在 API 请求中使用。系统以**双模型模式**运行（`models-max 2`）：一个主模型（如 278）+ aux 共存，共享 GPU 算力。
 
 ### 1. 云端 Nginx 配置
 
@@ -623,7 +630,7 @@ ExecStart=/home/zxw/llama/llama.cpp/build/bin/llama-server \
     --api-key {your_api_key} \
     -a Qwen3.6 \
     --models-dir /home/zxw/model \
-    --models-max 1 \
+    --models-max 2 \
     --models-preset /home/zxw/model/router-preset.ini \
     --sleep-idle-seconds 600 \
     --timeout 600 \
@@ -693,9 +700,9 @@ providers:
       "274":
         context_length: 262144
         max_output_tokens: 32768
-      "35q":
-        context_length: 262144
-        max_output_tokens: 32768
+      "aux":
+        context_length: 65536      # 每 slot 64K（ctx-size 196608 ÷ parallel 3）
+        max_output_tokens: 1024    # 辅助任务输出短
         supports_vision: true
       "35b":
         context_length: 262144
@@ -705,13 +712,51 @@ providers:
     stale_timeout_seconds: 900    # 非流式停滞检测
 
 model:
-  default: "358"
+  default: "278"
   provider: "custom:local-llm"
   base_url: "https://dashenzhiyan.com/v1"
   extra_body:
     chat_template_kwargs:
       enable_thinking: true
 max_tokens: 32768                 # 必须 ≥ reasoning-budget + 预期输出
+
+auxiliary:
+  title_generation:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  triage_specifier:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  approval:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  skills_hub:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  mcp:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  profile_describer:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  compression:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  web_extract:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  vision:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 120
 
 streaming:
   enabled: true                  # Gateway Bot 流式输出（editMessage）
@@ -724,8 +769,10 @@ compression:
 **配置要点：**
 - `provider: "custom:local-llm"` 走命名 providers 解析路径（`"custom"` direct-alias 会忽略 `extra_body`）
 - `key_env: "DASHENZHIYAN_API_KEY"` — API key 环境变量名从域名推导，需在 `~/.hermes/.env` 中设置
-- `supports_vision: true` 仅 35B MoE 模型（358/35q/35b 配置了 mmproj）；27B Dense 无视觉能力
-- `max_output_tokens: 32768` — 不设置则 Hermes 默认 4096，长回复会被截断
+- `supports_vision: true` 仅 35B MoE 模型（358/35b/aux 配置了 mmproj）；27B Dense 无视觉能力
+- **aux 模型** — 辅助任务专用，`reasoning=off`（无 thinking 开销），`max_output_tokens: 1024`（短输出），`context_length: 65536`（每 slot 64K）
+- **auxiliary 配置** — 9 个任务（title_generation、triage_specifier、approval、skills_hub、mcp、profile_describer、compression、web_extract、vision）全部路由到 `aux`，消除模型切换延迟
+- `max_output_tokens: 32768` — 不设置则 Hermes 默认 4096，长回复会被截断（仅主模型；aux 用 1024）
 - `max_tokens: 32768` — 必须 ≥ `reasoning-budget`（8192）+ 预期输出；8192 会导致 thinking token 耗尽全部配额，截断 tool_calls 和回复
 - `chat_template_kwargs: enable_thinking: true` — 启用 Qwen3.6 思考模式；省略或设 `false` 可关闭
 - `streaming.enabled: true` — 启用 Gateway Bot 流式输出（Telegram/Discord/Slack 的 editMessageText）
@@ -739,7 +786,7 @@ compression:
 wsl                                    # 进入 WSL
 hermes                                 # TUI 模式（交互式）
 hermes -z '快速问题'                    # oneshot 模式
-hermes -z '问题' --model 35q           # 指定模型的 oneshot
+hermes -z '问题' --model 35b           # 指定模型的 oneshot
 ```
 
 **TUI 常用命令：** `/model 358` 切换模型、`/skills` 查看技能、`/help` 全部命令、`Ctrl+C` 中断回复、`Ctrl+D` 或 `/exit` 退出。
@@ -749,7 +796,7 @@ hermes -z '问题' --model 35q           # 指定模型的 oneshot
 QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webchat）。
 
 **Provider 配置**（`~/.qclaw/openclaw.json`）：
-- `myllm` provider → `https://dashenzhiyan.com/v1/`，6 个模型（358/278/276/274/35q/35b）
+- `myllm` provider → `https://dashenzhiyan.com/v1/`，6 个模型（358/278/276/274/35b/aux）
 - 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启
 - `injectNumCtxForOpenAICompat: false`
 - 默认模型：`qclaw/pool-glm-5.1`（云端代理）；xiaowei agent 使用 `myllm/358`
@@ -807,7 +854,7 @@ curl https://{your_domain}/v1/chat/completions \
 
 **状态：** 未解决——等待上游修复（PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453)）
 
-**受影响模型：** 27B Dense 系列（别名 `278`/`276`/`274`）。35B MoE 模型（别名 `358`/`35q`/`35b`）**不受**影响。
+**受影响模型：** 27B Dense 系列（别名 `278`/`276`/`274`）。35B MoE 模型（别名 `358`/`35b`/`aux`）**不受**影响。
 
 **现象：** 27B Dense 模型在 `parallel ≥ 3` 且启用 MTP 时，处理任何请求都会触发 `GGML_ASSERT` 导致 `llama-server` abort。
 
@@ -849,4 +896,4 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ---
 
-*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-05-31*
+*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-06-01*

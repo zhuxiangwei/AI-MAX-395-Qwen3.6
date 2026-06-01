@@ -502,10 +502,10 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Long timeout (LLM inference is slow, match client timeout)
-        proxy_read_timeout 3600s;
+        # Long timeout (LLM inference is slow)
+        proxy_read_timeout 600s;
         proxy_connect_timeout 60s;
-        proxy_send_timeout 3600s;
+        proxy_send_timeout 600s;
 
         # SSE streaming support
         proxy_set_header Connection '';

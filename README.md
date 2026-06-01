@@ -337,24 +337,6 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880"
 
 **Apply:** `sudo update-grub && sudo reboot`
 
-### Swap Configuration
-
-```bash
-# Check current swap
-swapon --show
-
-# Create 32 GB swap file
-sudo fallocate -l 32G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-
-# Persist across reboots
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-```
-
-> 32 GB swap provides safety margin for dual-model cold-load memory spikes. With `--sleep-idle-seconds` removed and models resident, actual swap usage should be minimal (~17 MB observed).
-
 ### Software
 
 | Component | Version / Details |
@@ -559,7 +541,25 @@ ssh-keygen -t ed25519 -C "llm-tunnel@faex1"
 ssh-copy-id root@{your_server_ip}
 ```
 
-### 5. Inference Service (systemd)
+### 5. Swap Configuration (Ubuntu)
+
+```bash
+# Check current swap
+swapon --show
+
+# Create 32 GB swap file
+sudo fallocate -l 32G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# Persist across reboots
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+> 32 GB swap provides safety margin for dual-model cold-load memory spikes. With `--sleep-idle-seconds` removed and models resident, actual swap usage should be minimal (~17 MB observed).
+
+### 6. Inference Service (systemd)
 
 **File:** `~/.config/systemd/user/llm-router.service` (user-level, no sudo needed)
 

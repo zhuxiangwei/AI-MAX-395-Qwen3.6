@@ -338,24 +338,6 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880"
 
 **应用：** `sudo update-grub && sudo reboot`
 
-### Swap 配置
-
-```bash
-# 查看当前 swap
-swapon --show
-
-# 创建 32 GB swap 文件
-sudo fallocate -l 32G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-
-# 开机自动挂载
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-```
-
-> 32 GB swap 为双模型冷加载内存尖峰提供安全余量。在移除 `--sleep-idle-seconds` 且模型常驻的情况下，实际 swap 使用极少（实测 ~17 MB）。
-
 ### 软件
 
 | 组件 | 版本 / 详情 |
@@ -558,7 +540,25 @@ ssh-keygen -t ed25519 -C "llm-tunnel@faex1"
 ssh-copy-id root@{your_server_ip}
 ```
 
-### 5. 推理服务（systemd）
+### 5. Swap 配置（Ubuntu）
+
+```bash
+# 查看当前 swap
+swapon --show
+
+# 创建 32 GB swap 文件
+sudo fallocate -l 32G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# 开机自动挂载
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+> 32 GB swap 为双模型冷加载内存尖峰提供安全余量。在移除 `--sleep-idle-seconds` 且模型常驻的情况下，实际 swap 使用极少（实测 ~17 MB）。
+
+### 6. 推理服务（systemd）
 
 **文件：** `~/.config/systemd/user/llm-router.service`（用户级，无需 sudo）
 

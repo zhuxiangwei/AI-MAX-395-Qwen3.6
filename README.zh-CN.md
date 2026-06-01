@@ -44,7 +44,7 @@
 
 ### 35B-A3B MoE APEX I-Quality (别名 `35q`（QClaw）/ `aux`（Hermes）, ~22 GB)
 
-APEX 量化——针对 MoE 的自适应精度策略。混合精度 per tensor（关键层 Q6_K/Q8_0，中间 expert 层 Q4_K_M）。整体 ~22 GB（按体积介于 Q4~Q5，但质量接近 Q8）。imatrix 多样化校准。**比 UD-Q8+MTP 快 48%，体积仅 59%。** 现已改造为**辅助模型**（`35q`）：禁用 reasoning，紧凑上下文（每 slot 64K），保留 mmproj 支持视觉任务。
+APEX 量化——针对 MoE 的自适应精度策略。混合精度 per tensor（关键层 Q6_K/Q8_0，中间 expert 层 Q4_K_M）。整体 ~22 GB（按体积介于 Q4~Q5，但质量接近 Q8）。imatrix 多样化校准。**比 UD-Q8+MTP 快 48%，体积仅 59%。** 现已改造为**辅助模型**（`35q`）：紧凑上下文（每 slot 64K），保留 mmproj 支持视觉任务。Reasoning 默认开启（`reasoning-budget = 8192`）；客户端可通过 `chat_template_kwargs.enable_thinking: false` 在请求层面关闭 thinking。
 
 **最优配置：F16 KV cache。** 与 35B UD-Q8 规律一致：≤128K → UB=512（prefill +15~23%）；256K → UB=256（prefill 比 UB=512 慢 4%）。
 
@@ -238,7 +238,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 不加 `--no-mmap` | 无收益，`--mmap`（默认）+ `--mlock` 是最佳组合 |
 | `-a Qwen3.6` | 设置 API 响应中的 model 字段；客户端需校验 model 字段时必须 |
 | alias 短名路由 | 无需符号链接；别名和文件名均可路由 |
-| 35q: `reasoning = off`，紧凑 ctx | 禁用推理节省内存 + 避免 thinking token 开销；196608 ctx (3 slot × 65K) 对辅助任务已足够 |
+| 35q: 不使用 `reasoning = off`，紧凑 ctx | `reasoning = off` 导致灾难性的 checkpoint 恢复变慢（43–75s vs <0.1s，见已知问题）。改用 `reasoning-budget = 8192`（默认值）；客户端可在请求层面关闭 thinking。196608 ctx (3 slot × 65K) 对辅助任务已足够 |
 | 不加 `--sleep-idle-seconds` | 两种模式均不加：已加载模型常驻；空闲卸载→重载循环会导致内存尖峰和 OOM（见已知问题） |
 
 ### 使用约束
@@ -251,7 +251,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 27B Q6/Q4 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
-| Thinking 模式 | 主模型：已开启（`reasoning-budget=8192`）；35q：已禁用（`reasoning=off`） | Budget 上限防止思考 token 失控增长；35q 辅助任务不需要 thinking |
+| Thinking 模式 | 所有模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；`reasoning=off` 会导致 checkpoint 恢复 bug（见已知问题）；客户端通过 `chat_template_kwargs.enable_thinking: false` 在请求层面控制 |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 并发 | 35B 最多 3 个，27B Q8 最多 1 个，27B Q6/Q4 最多 2 个 | 多 slot 已启用；278 parallel=1 给双模型加载留内存余量 |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
@@ -384,7 +384,7 @@ Router Mode 从 `$HOME/model/` 提供所有模型服务。单模型模式（`--m
 |------|--------|------|------|------|------|----------|------|
 | **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~24 GB | 3B | 主力（质量） |
 | **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | 主力（最快） |
-| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~22 GB | 3B | 辅助（视觉，快速，无推理） |
+| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~22 GB | 3B | 辅助（视觉，快速） |
 | **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | 主力（默认） |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | 主力 |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | 主力 |
@@ -736,8 +736,7 @@ spec-draft-n-max = 3
 mmproj = /home/$USER/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
-reasoning = off
-reasoning-budget = 0
+reasoning-budget = 8192
 ctx-size = 196608
 batch-size = 4096
 ubatch-size = 512
@@ -876,8 +875,7 @@ spec-draft-n-max = 3
 mmproj = /home/$USER/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
-reasoning = off
-reasoning-budget = 0
+reasoning-budget = 8192
 ctx-size = 196608
 batch-size = 4096
 ubatch-size = 512
@@ -1043,6 +1041,29 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **警告：** 不要重新添加 `--sleep-idle-seconds`。如果请求了第三种模型（如 358），LRU 淘汰会卸载其中一个已加载模型——这是预期行为。如果必须保证 278 和 35q 同时在线，确保客户端不请求第三种模型。
 
+### `reasoning=off` 导致 APEX I-Quality checkpoint 恢复灾难性变慢
+
+**状态：** 已修复——从 aux/35q preset 中移除 `reasoning = off` 和 `reasoning-budget = 0`，替换为 `reasoning-budget = 8192`
+
+**受影响模型：** 仅 35B-A3B APEX I-Quality（别名 `aux`/`35q`）。其他模型（358/35b/278/276/274）不受影响。
+
+**现象：** aux 的第一次请求正常（<0.5s），但后续请求耗时 43–75 秒。服务端看似卡死——数十秒无输出，然后以 ~1 t/s 缓慢返回。
+
+**根因：** `reasoning = off` 导致 checkpoint 保存时的 attention mask 与运行时配置不匹配。当 llama-server 尝试恢复 prompt cache checkpoint 时，检测到不一致，回退到慢路径——重新 prefill checkpoint 中的所有 token，而非直接加载 KV cache 快照。
+
+**证据：**
+
+| 配置 | Prefill 速度 | Checkpoint 恢复 |
+|------|-------------|----------------|
+| `reasoning=off`（异常） | 0.37–0.95 t/s | 43–75s ❌ |
+| `reasoning-budget=8192`（正常） | 118–129 t/s | <0.1s ✅ |
+
+其他开启 reasoning 的 MoE 模型（358、35b）无 checkpoint 问题。仅 `reasoning=off` + APEX I-Quality 的组合触发此 bug。
+
+**修复：** 从 aux/35q preset section 中移除 `reasoning = off` 和 `reasoning-budget = 0`。使用 `reasoning-budget = 8192`（与其他模型一致）。如不需要 thinking 输出，在 API 请求体中设置 `chat_template_kwargs: { enable_thinking: false }`。
+
+**警告：** 不要重新添加 `reasoning = off`。这是发现的第三个 reasoning 相关 bug（前两个：`reasoning-format=none` 导致重复输出，`reasoning=off` 导致 checkpoint 恢复失败）。安全做法是在服务端始终开启 reasoning，在请求层面控制。
+
 ---
 
-*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-06-01*
+*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-06-02*

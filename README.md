@@ -44,7 +44,7 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 ### 35B-A3B MoE APEX I-Quality (alias `35q` in QClaw, `aux` in Hermes, ~22 GB)
 
-APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Now repurposed as the **auxiliary model**: reasoning disabled, compact context (64K per slot), with mmproj for vision tasks.
+APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Now repurposed as the **auxiliary model**: compact context (64K per slot), with mmproj for vision tasks. Reasoning is enabled by default (`reasoning-budget = 8192`); clients can disable thinking per-request via `chat_template_kwargs.enable_thinking: false`.
 
 **Optimal config: F16 KV cache.** Same pattern as 35B UD-Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
 
@@ -238,7 +238,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
-| 35q: `reasoning = off`, compact ctx | Disabling reasoning on auxiliary model saves memory + avoids thinking token overhead; 196608 ctx (3 slots × 65K) is sufficient for auxiliary tasks |
+| 35q: no `reasoning = off`, compact ctx | `reasoning = off` causes catastrophic checkpoint restore slowdown (43–75s vs <0.1s, see Known Issues). Use `reasoning-budget = 8192` (default) instead; clients disable thinking per-request if needed. 196608 ctx (3 slots × 65K) is sufficient for auxiliary tasks |
 | No `--sleep-idle-seconds` | Both modes: loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
 
 ### Usage Constraints
@@ -250,7 +250,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | 27B Q6/Q4 max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); `parallel = 3` triggers Vulkan bug |
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
-| Thinking mode | Main models: enabled (`reasoning-budget=8192`); 35q: disabled (`reasoning=off`) | Budget cap prevents runaway thinking; auxiliary model doesn't need thinking |
+| Thinking mode | All models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
@@ -383,7 +383,7 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 |-------|------|--------|-------|------|------|---------------|------|
 | **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Main (quality) |
 | **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Main (fastest) |
-| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Auxiliary (vision, fast, no reasoning) |
+| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Auxiliary (vision, fast) |
 | **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Main (default) |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Main |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Main |
@@ -737,8 +737,7 @@ spec-draft-n-max = 3
 mmproj = /home/$USER/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
-reasoning = off
-reasoning-budget = 0
+reasoning-budget = 8192
 ctx-size = 196608
 batch-size = 4096
 ubatch-size = 512
@@ -877,8 +876,7 @@ spec-draft-n-max = 3
 mmproj = /home/$USER/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
-reasoning = off
-reasoning-budget = 0
+reasoning-budget = 8192
 ctx-size = 196608
 batch-size = 4096
 ubatch-size = 512
@@ -1044,6 +1042,29 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Warning:** Do **not** re-add `--sleep-idle-seconds`. If a third model is requested (e.g., 358), LRU eviction will unload one of the two loaded models. This is expected behavior — the freed slot will be used for the requested model. If both 278 and 35q must remain loaded, ensure no client requests a third model, or use a dedicated directory with only 2 models.
 
+### `reasoning=off` Causes Catastrophic Checkpoint Restore Slowdown on APEX I-Quality
+
+**Status:** Fixed — removed `reasoning = off` and `reasoning-budget = 0` from aux/35q preset, replaced with `reasoning-budget = 8192`
+
+**Affected model:** 35B-A3B APEX I-Quality (alias `aux`/`35q`) only. All other models (358/35b/278/276/274) are unaffected.
+
+**Symptom:** After the first request to aux, subsequent requests take 43–75 seconds instead of <0.5 seconds. The server appears frozen — no output for tens of seconds, then response arrives at ~1 t/s.
+
+**Root cause:** `reasoning = off` creates an attention mask mismatch between the checkpoint (saved with default reasoning-enabled state) and the model's runtime configuration. When llama-server attempts to restore a prompt cache checkpoint, it detects the mismatch and falls back to a slow path — re-prefilling all tokens from the checkpoint instead of loading the KV cache snapshot directly.
+
+**Evidence:**
+
+| Configuration | Prefill speed | Checkpoint restore |
+|--------------|-------------|-------------------|
+| `reasoning=off` (broken) | 0.37–0.95 t/s | 43–75s ❌ |
+| `reasoning-budget=8192` (fixed) | 118–129 t/s | <0.1s ✅ |
+
+Other MoE models (358, 35b) with reasoning enabled have no checkpoint issues. Only the combination of `reasoning=off` + APEX I-Quality triggers the bug.
+
+**Fix:** Remove `reasoning = off` and `reasoning-budget = 0` from the aux/35q preset section. Use `reasoning-budget = 8192` (same as other models). If thinking output is not desired, disable it per-request via `chat_template_kwargs: { enable_thinking: false }` in the API request body.
+
+**Warning:** Do **not** re-add `reasoning = off` to any model preset. This is the third reasoning-related bug discovered (after `reasoning-format=none` causing duplicate output, and `reasoning=off` causing checkpoint restore failure). The safe approach is to always keep reasoning enabled at the server level and control it per-request.
+
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-06-01*
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-06-02*

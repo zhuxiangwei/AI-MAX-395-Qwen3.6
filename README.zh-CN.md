@@ -920,8 +920,15 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 - 消除 prompt cache 翻倍风险（1 slot 最多 8 GB vs 2 slot 潜在 16 GB）
 
 **待完成（需要 sudo）：**
-- Swap 从 8 GB 扩容到 32 GB
+- Swap 从 8 GB 扩容到 32 GB（为双模型峰值提供额外缓冲）
 - 时区设置为 Asia/Shanghai
+
+**双模型内存余量（27B Q8 parallel=1 + aux）：**
+- 27B Q8 长任务峰值：~70 GB（权重 33G + KV cache ~4G + prompt cache ~8G + MTP/overhead）
+- aux 模型：~33 GB（权重 22G + KV cache 3G + prompt cache 8G）
+- 合计：~103 GB / 128 GB RAM = **25 GB 余量**（安全但不算充裕）
+- 之前 OOM：parallel=2 使 KV cache + prompt cache 翻倍 → 超过 128 GB
+- parallel=1 消除了翻倍问题，双模型共存可行
 
 ---
 

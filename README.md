@@ -884,8 +884,15 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 - Saves ~4 GB KV cache pre-allocation (1 slot vs 2)
 - Eliminates prompt cache doubling risk (1 slot max 8 GB vs 2 slots potentially 16 GB)
 
+**Dual-model memory headroom (27B Q8 parallel=1 + aux):**
+- 27B Q8 long task peak: ~70 GB (weights 33G + KV cache ~4G + prompt cache ~8G + MTP/overhead)
+- aux model: ~33 GB (weights 22G + KV cache 3G + prompt cache 8G)
+- Total: ~103 GB / 128 GB RAM = **25 GB headroom** (safe but not generous)
+- Previous OOM: parallel=2 doubled KV cache + prompt cache → exceeded 128 GB
+- parallel=1 eliminates the doubling, making dual-model coexistence viable
+
 **Pending (requires sudo):**
-- Increase swap from 8 GB to 32 GB
+- Increase swap from 8 GB to 32 GB (additional buffer for dual-model peak)
 - Set timezone to Asia/Shanghai
 
 ---

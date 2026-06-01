@@ -2,7 +2,7 @@
 
 **[English](./README.md)** | **中文**
 
-在 AMD Ryzen AI Max+ 395 (Strix Halo) 上部署 Qwen3.6 系列大模型，使用 llama.cpp + Vulkan，通过 SSH 反向隧道 + 云端 Nginx HTTPS 暴露推理 API。
+在 AMD Ryzen AI Max+ 395 (Strix Halo) 上部署 Qwen3.6 系列大模型，使用 llama.cpp + Vulkan，通过 SSH 反向隧道 + 云端 Nginx HTTPS 对外提供推理 API。
 
 ---
 
@@ -507,15 +507,13 @@ ExecStart=/usr/bin/ssh \
     -o ConnectTimeout=10 \
     -R 8080:127.0.0.1:12345 \
     -N \
-    root@{your_server_ip}
+    {your_server_user}@{your_server_ip}
 Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=default.target
 ```
-
-> 注：反向 SSH（-R 2222）已移除，仅保留 API 隧道。管理推理机请通过本地网络直连。
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -529,7 +527,7 @@ loginctl enable-linger   # 防止登出后服务终止
 **手动测试隧道（先于 systemd）：**
 ```bash
 # 在推理机上：
-ssh -R 8080:127.0.0.1:12345 root@{your_server_ip} -N
+ssh -R 8080:127.0.0.1:12345 {your_server_user}@{your_server_ip} -N
 # 在云端验证：
 curl http://127.0.0.1:8080/v1/models
 ```
@@ -537,7 +535,7 @@ curl http://127.0.0.1:8080/v1/models
 **SSH 密钥设置（免密登录）：**
 ```bash
 ssh-keygen -t ed25519 -C "llm-tunnel@faex1"
-ssh-copy-id root@{your_server_ip}
+ssh-copy-id {your_server_user}@{your_server_ip}
 ```
 
 ### 5. Swap 配置（Ubuntu）
@@ -557,48 +555,6 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 > 32 GB swap 为双模型冷加载内存尖峰提供安全余量。在移除 `--sleep-idle-seconds` 且模型常驻的情况下，实际 swap 使用极少（实测 ~17 MB）。
-
-### 6. 推理服务（systemd）
-
-**文件：** `~/.config/systemd/user/llm-router.service`（用户级，无需 sudo）
-
-```ini
-[Unit]
-Description=LLM Router Service (llama-server multi-model)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
-    --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key} \
-    -a Qwen3.6 \
-    --models-dir /home/$USER/model \
-    --models-max 2 \
-    --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 600 \
-    --metrics
-Restart=on-failure
-RestartSec=10
-WorkingDirectory=/home/$USER
-LimitMEMLOCK=infinity
-
-[Install]
-WantedBy=default.target
-```
-
-> **注意：** 服务配置因部署模式不同而异：
-> - **Hermes**（双模型常驻）：`--models-max 2`，不加 `--sleep-idle-seconds`
-> - **QClaw**（单模型 LRU）：`--models-max 1`，不加 `--sleep-idle-seconds`
->
-> 两种模式共用 `--models-dir` 和 `--models-preset`，但 Preset INI 参数不同（278 的 `parallel` 和 `ctx-size` 因模式而异）。具体配置见各客户端章节。
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable llm-router
-systemctl --user start llm-router
-loginctl enable-linger   # 防止登出后服务终止
-```
 
 ### 模型切换
 
@@ -829,6 +785,33 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 - `injectNumCtxForOpenAICompat: false`
 - 默认模型：`qclaw/pool-glm-5.1`（云端代理）
 
+**推理服务——单模型 LRU 模式**（`llm-router.service`）：
+```ini
+[Unit]
+Description=LLM Router Service (llama-server multi-model)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
+    --host 127.0.0.1 --port 12345 \
+    --api-key {your_api_key} \
+    -a Qwen3.6 \
+    --models-dir /home/$USER/model \
+    --models-max 1 \
+    --models-preset /home/$USER/model/router-preset.ini \
+    --timeout 600 \
+    --metrics
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=/home/$USER
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target
+```
+> 单模型 LRU 模式：一次加载一个模型，按请求切换（冷加载 8–17 秒）。不加 `--sleep-idle-seconds`。
+
 **Preset INI**（`~/model/router-preset.ini`）：
 ```ini
 [Qwen3.6-27B-UD-Q8_K_XL]
@@ -927,33 +910,6 @@ alias = 274
 ```
 
 **流式输出：** 微信/QQ/企微: blockStreaming；Telegram/Discord/Slack: 编辑消息式流式
-
-**推理服务——单模型 LRU 模式**（`llm-router.service`）：
-```ini
-[Unit]
-Description=LLM Router Service (llama-server multi-model)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
-    --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key} \
-    -a Qwen3.6 \
-    --models-dir /home/$USER/model \
-    --models-max 1 \
-    --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 600 \
-    --metrics
-Restart=on-failure
-RestartSec=10
-WorkingDirectory=/home/$USER
-LimitMEMLOCK=infinity
-
-[Install]
-WantedBy=default.target
-```
-> 单模型 LRU 模式：一次加载一个模型，按请求切换（冷加载 8–17 秒）。不加 `--sleep-idle-seconds`。
 
 ### 验证清单
 

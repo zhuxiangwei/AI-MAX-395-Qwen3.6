@@ -2,7 +2,7 @@
 
 **[English](./README.md)** | **[中文](./README.zh-CN.md)**
 
-Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with llama.cpp + Vulkan, and expose the inference API to the internet via SSH reverse tunnel + Nginx HTTPS.
+Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with llama.cpp + Vulkan, and serve the inference API over the internet via SSH reverse tunnel + Nginx HTTPS.
 
 ---
 
@@ -506,7 +506,7 @@ ExecStart=/usr/bin/ssh \
     -o ConnectTimeout=10 \
     -R 8080:127.0.0.1:12345 \
     -N \
-    root@{your_server_ip}
+    {your_server_user}@{your_server_ip}
 Restart=on-failure
 RestartSec=10
 
@@ -515,8 +515,6 @@ WantedBy=default.target
 ```
 
 **Tunnel port:** `-R 8080:127.0.0.1:12345` (API only)
-
-> Note: Reverse SSH (-R 2222) has been removed. Manage the inference box via local network direct access only.
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -530,7 +528,7 @@ loginctl enable-linger   # survive logout
 **Manual tunnel test (before systemd):**
 ```bash
 # On inference box:
-ssh -R 8080:127.0.0.1:12345 root@{your_server_ip} -N
+ssh -R 8080:127.0.0.1:12345 {your_server_user}@{your_server_ip} -N
 # On cloud, verify:
 curl http://127.0.0.1:8080/v1/models
 ```
@@ -538,7 +536,7 @@ curl http://127.0.0.1:8080/v1/models
 **SSH key setup (passwordless):**
 ```bash
 ssh-keygen -t ed25519 -C "llm-tunnel@faex1"
-ssh-copy-id root@{your_server_ip}
+ssh-copy-id {your_server_user}@{your_server_ip}
 ```
 
 ### 5. Swap Configuration (Ubuntu)
@@ -558,48 +556,6 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 > 32 GB swap provides safety margin for dual-model cold-load memory spikes. With `--sleep-idle-seconds` removed and models resident, actual swap usage should be minimal (~17 MB observed).
-
-### 6. Inference Service (systemd)
-
-**File:** `~/.config/systemd/user/llm-router.service` (user-level, no sudo needed)
-
-```ini
-[Unit]
-Description=LLM Router Service (llama-server multi-model)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
-    --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key} \
-    -a Qwen3.6 \
-    --models-dir /home/$USER/model \
-    --models-max 2 \
-    --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 600 \
-    --metrics
-Restart=on-failure
-RestartSec=10
-WorkingDirectory=/home/$USER
-LimitMEMLOCK=infinity
-
-[Install]
-WantedBy=default.target
-```
-
-> **Note:** The service config differs between deployment modes:
-> - **Hermes** (dual-model resident): `--models-max 2`, no `--sleep-idle-seconds`
-> - **QClaw** (single-model LRU): `--models-max 1`, no `--sleep-idle-seconds`
->
-> Both modes share the same `--models-dir` and `--models-preset`, but the Preset INI parameters differ (278 `parallel` and `ctx-size` vary by mode). See each client section for the exact configuration.
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable llm-router
-systemctl --user start llm-router
-loginctl enable-linger   # survive logout
-```
 
 ### Model Switching
 
@@ -830,6 +786,33 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - `injectNumCtxForOpenAICompat: false`
 - Default model: `qclaw/pool-glm-5.1` (cloud proxy)
 
+**Inference server — single-model LRU mode** (`llm-router.service`):
+```ini
+[Unit]
+Description=LLM Router Service (llama-server multi-model)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
+    --host 127.0.0.1 --port 12345 \
+    --api-key {your_api_key} \
+    -a Qwen3.6 \
+    --models-dir /home/$USER/model \
+    --models-max 1 \
+    --models-preset /home/$USER/model/router-preset.ini \
+    --timeout 600 \
+    --metrics
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=/home/$USER
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target
+```
+> Single-model LRU mode: one model loaded at a time, switching on client request (8–17s cold load). No `--sleep-idle-seconds`.
+
 **Preset INI** (`~/model/router-preset.ini`):
 ```ini
 [Qwen3.6-27B-UD-Q8_K_XL]
@@ -928,33 +911,6 @@ alias = 274
 ```
 
 **Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
-
-**Inference server — single-model LRU mode** (`llm-router.service`):
-```ini
-[Unit]
-Description=LLM Router Service (llama-server multi-model)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
-    --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key} \
-    -a Qwen3.6 \
-    --models-dir /home/$USER/model \
-    --models-max 1 \
-    --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 600 \
-    --metrics
-Restart=on-failure
-RestartSec=10
-WorkingDirectory=/home/$USER
-LimitMEMLOCK=infinity
-
-[Install]
-WantedBy=default.target
-```
-> Single-model LRU mode: one model loaded at a time, switching on client request (8–17s cold load). No `--sleep-idle-seconds`.
 
 ### Verification Checklist
 

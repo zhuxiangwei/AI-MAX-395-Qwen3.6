@@ -770,16 +770,10 @@ hermes -z '问题' --model 35b           # 指定模型的 oneshot
 QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webchat）。
 
 **Provider 配置**（`~/.qclaw/openclaw.json`）：
-- `myllm` provider → `https://dashenzhiyan.com/v1/`，6 个模型（358/278/276/274/35b/aux）
-- 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启；aux: `contextWindow: 65536`
+- `myllm` provider → `https://dashenzhiyan.com/v1/`，5 个模型（358/278/276/274/35b）
+- 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启
 - `injectNumCtxForOpenAICompat: false`
 - 默认模型：`qclaw/pool-glm-5.1`（云端代理）；xiaowei agent 使用 `myllm/358`
-
-**模型用途：**
-- `278` — 主模型，所有主会话（27B Q8，262K 上下文）
-- `aux` — 辅助任务（35B APEX I-Quality，reasoning 关闭，65K 上下文，视觉已开启）
-- `358`/`35b` — 35B MoE（视觉已开启，262K 上下文）；xiaowei agent 默认
-- `276`/`274` — 27B Q6/Q4 备用
 
 **流式输出：** 微信/QQ/企微: blockStreaming；Telegram/Discord/Slack: 编辑消息式流式
 

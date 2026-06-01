@@ -771,16 +771,10 @@ hermes -z 'question' --model 35b       # oneshot with specific model
 QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, QQ, webchat).
 
 **Provider config** (`~/.qclaw/openclaw.json`):
-- `myllm` provider → `https://dashenzhiyan.com/v1/`, 6 models (358/278/276/274/35b/aux)
-- Per-model: `contextWindow: 262144`, `maxTokens: 32768`, reasoning enabled; aux: `contextWindow: 65536`
+- `myllm` provider → `https://dashenzhiyan.com/v1/`, 5 models (358/278/276/274/35b)
+- Per-model: `contextWindow: 262144`, `maxTokens: 32768`, reasoning enabled
 - `injectNumCtxForOpenAICompat: false`
 - Default model: `qclaw/pool-glm-5.1` (cloud proxy); xiaowei agent uses `myllm/358`
-
-**Model usage:**
-- `278` — primary model for all main sessions (27B Q8, 262K context)
-- `aux` — auxiliary tasks (35B APEX I-Quality, reasoning off, 65K context, vision enabled)
-- `358`/`35b` — 35B MoE (vision enabled, 262K context); xiaowei agent default
-- `276`/`274` — 27B Q6/Q4 fallback
 
 **Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
 

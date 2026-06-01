@@ -234,7 +234,8 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it. |
 | 35B MoE: `parallel = 3`, `ctx-size = 786432` | 3 concurrent slots, each gets 262K context (ctx-size ÷ parallel); memory sufficient on 128 GB GTT (main models) |
 | aux: `parallel = 3`, `ctx-size = 196608` | 3 concurrent slots, each gets 64K context; auxiliary tasks don't need long context; saves ~17 GB KV cache vs 786432 |
-| 27B Dense: `parallel = 2`, `ctx-size = 524288` | 2 concurrent slots (each 262K); `parallel = 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
+| 27B Q8: `parallel = 1`, `ctx-size = 262144` | Single slot (262K); single-user scenario; reduces KV cache and prompt cache memory risk |
+| 27B Q6/Q4: `parallel = 2`, `ctx-size = 524288` | 2 concurrent slots (each 262K); `parallel = 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
@@ -246,14 +247,15 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Constraint | Value | Reason |
 |-----------|-------|--------|
 | 35B MoE max concurrent slots | 3 (`parallel = 3`) | `ctx-size = 786432` (786432 ÷ 3 = 262K per slot) |
-| 27B Dense max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); `parallel = 3` triggers Vulkan bug |
+| 27B Q8 max concurrent slots | 1 (`parallel = 1`) | `ctx-size = 262144` (single slot, 262K context); single-user scenario, no concurrency needed; reduces KV cache + prompt cache memory risk |
+| 27B Q6/Q4 max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); `parallel = 3` triggers Vulkan bug |
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
 | Thinking mode | Main models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking tokens; no performance cost |
 | | aux: disabled (`reasoning=off`, `reasoning-budget=0`) | Auxiliary tasks don't need thinking; `reasoning-budget=0` alone is insufficient, must pair with `reasoning=off` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Dual-model concurrency | `models-max 2` | Main model + aux coexist; GTT ~66 GB total (37 GB main + 29 GB aux). Concurrent GPU compute shared |
-| Concurrency | 35B: up to 3, 27B: up to 2 | Multi-slot supported; concurrent requests share GPU compute (~33% t/s each at full load for 35B) |
+| Concurrency | 35B: up to 3, 27B Q8: 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 27B Q8 set to 1 for memory safety; concurrent requests share GPU compute (~33% t/s each at full load for 35B) |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
@@ -323,7 +325,7 @@ alias = 358
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 2           ; ⚠ 3 triggers Vulkan bug (see Known Issues)
+parallel = 1           ; single slot — single-user scenario, reduces memory risk
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -331,7 +333,7 @@ numa = distribute
 reasoning-budget = 8192
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
+ctx-size = 262144      ; single slot, 262K context
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -851,12 +853,40 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Workaround attempted:** `--kv-unified` bypasses crash path #1 but **not** crash path #2 (MTP draft checkpoint). Not viable.
 
-**Current mitigation:** Reduce `parallel` to 2 for all 27B Dense models. This avoids the crash at the cost of one fewer concurrent slot.
+**Current mitigation:** 27B Q8 reduced to `parallel = 1` (single-user scenario, no concurrency needed); 27B Q6/Q4 reduced to `parallel = 2`. This avoids the crash at the cost of reduced concurrent slots.
 
 **Upstream tracking:**
 - Issue [#19839](https://github.com/ggml-org/llama.cpp/issues/19839) — original bug report
 - PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453) — proposed fix (add NULL check before assert, delegate to backend `get_tensor`); closed but not merged
 - As of b9401 (commit `751ebd17a`), all 11 assert locations remain unchanged in `ggml-backend.cpp`
+
+---
+
+### OOM Kill with Dual-Model + Prompt Cache Accumulation
+
+**Status:** Mitigated — 27B Q8 reduced to `parallel = 1`
+
+**Affected scenario:** Main model (27B Q8) + aux model coexist in dual-model mode (`models-max 2`), with `parallel = 2` on the main model.
+
+**Symptom:** Linux OOM killer terminates `llama-server` after hours of idle operation. Service recovers via systemd auto-restart, but cold-loading causes 502 errors.
+
+**Root cause chain:**
+1. Main model runs with `parallel = 2`, creating 2 independent slots, each accumulating its own prompt cache (up to 8192 MiB per model)
+2. After a long session (task #2879, 53969 tokens), slot prompt cache grows to ~2.1 GB
+3. Both models loaded with `--mlock` — model weights locked in RAM, cannot be swapped
+4. When idle, both models occupy ~75 GB combined (weights + KV cache + prompt cache + MTP context)
+5. A new request triggers `prompt_save` which allocates additional memory → exceeds 128 GB RAM + 8 GB swap → OOM Kill
+
+**Key insight:** Prompt cache is **not automatically released** when slots are idle. `--cache-idle-slots` would help, but it requires `--kv-unified` which is incompatible with 27B MTP (triggers Vulkan crash path #2). With `parallel = 1`, there is only one slot, so prompt cache cannot double — max 8 GB ceiling is manageable within 128 GB RAM.
+
+**Mitigation:**
+- 27B Q8: `parallel = 1`, `ctx-size = 262144` (single slot, 262K context)
+- Saves ~4 GB KV cache pre-allocation (1 slot vs 2)
+- Eliminates prompt cache doubling risk (1 slot max 8 GB vs 2 slots potentially 16 GB)
+
+**Pending (requires sudo):**
+- Increase swap from 8 GB to 32 GB
+- Set timezone to Asia/Shanghai
 
 ---
 

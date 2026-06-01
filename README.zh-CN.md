@@ -233,7 +233,8 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 双模型模式 (`models-max 2`) | 主模型 + aux 共存；aux 处理 Hermes 辅助任务（视觉、标题生成、压缩等），无需模型切换 |
 | 35B MoE: `parallel = 3`，`ctx-size = 786432` | 3 个并发 slot，每个分配 262K 上下文（ctx-size ÷ parallel）；128 GB GTT 内存充裕（主模型） |
 | aux: `parallel = 3`，`ctx-size = 196608` | 3 个并发 slot，每个分配 64K 上下文；辅助任务不需要长上下文；比 786432 省 ~17 GB KV cache |
-| 27B Dense: `parallel = 2`，`ctx-size = 524288` | 2 个并发 slot（每个 262K）；`parallel = 3` 在 27B Dense 上触发 Vulkan bug（见已知问题） |
+| 27B Q8: `parallel = 1`，`ctx-size = 262144` | 单 slot（262K）；单用户场景；降低 KV cache 和 prompt cache 内存风险 |
+| 27B Q6/Q4: `parallel = 2`，`ctx-size = 524288` | 2 个并发 slot（每个 262K）；`parallel = 3` 在 27B Dense 上触发 Vulkan bug（见已知问题） |
 | `--spec-draft-n-max 3` | 4 比 3 慢 20.6% |
 | 全部模型 `-t 8` | 全 GPU 卸载下 t=8 vs t=16 无实质差异，t=8 更低温 |
 | 不加 `--no-mmap` | 无收益，`--mmap`（默认）+ `--mlock` 是最佳组合 |
@@ -245,14 +246,15 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 约束 | 值 | 原因 |
 |------|---|------|
 | 35B MoE 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 786432`（786432 ÷ 3 = 每 slot 262K） |
-| 27B Dense 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
+| 27B Q8 最大并发槽位 | 1 (`parallel = 1`) | `ctx-size = 262144`（单 slot，262K 上下文）；单用户场景无并发需求；降低 KV cache + prompt cache 内存风险 |
+| 27B Q6/Q4 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
 | Thinking 模式 | 主模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；无性能损失 |
 | | aux：已禁用（`reasoning=off`, `reasoning-budget=0`） | 辅助任务不需要 thinking；`reasoning-budget=0` 单独不生效，必须配合 `reasoning=off` |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 双模型并发 | `models-max 2` | 主模型 + aux 共存；GTT ~66 GB（37 GB 主 + 29 GB aux）。并发共享 GPU 算力 |
-| 并发 | 35B 最多 3 个，27B 最多 2 个 | 多 slot 已启用；并发请求共享 GPU 算力（35B 满载时每个约 33% t/s） |
+| 并发 | 35B 最多 3 个，27B Q8 为 1，27B Q6/Q4 最多 2 个 | 27B Q8 设为 1 降低内存风险；多 slot 已启用；并发请求共享 GPU 算力（35B 满载时每个约 33% t/s） |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
 
@@ -322,7 +324,7 @@ alias = 358
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 2           ; ⚠ 3 触发 Vulkan bug（见已知问题）
+parallel = 1           ; 单 slot——单用户场景，降低内存风险
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -330,7 +332,7 @@ numa = distribute
 reasoning-budget = 8192
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
+ctx-size = 262144      ; 单 slot，262K 上下文
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -886,12 +888,40 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **尝试的 workaround：** `--kv-unified` 可绕过崩溃路径 #1，但**无法绕过**崩溃路径 #2（MTP draft checkpoint）。不可行。
 
-**当前缓解措施：** 所有 27B Dense 模型 `parallel` 降为 2。牺牲一个并发 slot 以避免崩溃。
+**当前缓解措施：** 27B Q8 降为 `parallel = 1`（单用户场景无需并发），27B Q6/Q4 降为 `parallel = 2`。牺牲并发以避免崩溃。
 
 **上游追踪：**
 - Issue [#19839](https://github.com/ggml-org/llama.cpp/issues/19839) — 原始 bug 报告
 - PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453) — 提议修复（在 assert 前增加 NULL 检查，委托给 backend `get_tensor`）；已关闭但未合入
 - 截至版本 b9401（commit `751ebd17a`），`ggml-backend.cpp` 中全部 11 处断言均未修改
+
+---
+
+### 双模型 + Prompt Cache 累积导致 OOM Kill
+
+**状态：** 已缓解——27B Q8 降至 `parallel = 1`
+
+**受影响场景：** 主模型（27B Q8）+ aux 辅助模型在双模型模式下共存（`models-max 2`），主模型 `parallel = 2`。
+
+**现象：** 空闲数小时后 Linux OOM killer 终止 `llama-server`。systemd 自动重启恢复，但冷加载期间产生 502 错误。
+
+**根因链条：**
+1. 主模型以 `parallel = 2` 运行，创建 2 个独立 slot，各自累积独立的 prompt cache（每模型上限 8192 MiB）
+2. 长会话后（task #2879，53969 tokens），slot 的 prompt cache 增长到 ~2.1 GB
+3. 两个模型均使用 `--mlock`——模型权重锁定在 RAM 中，无法被 swap
+4. 空闲时两模型合计占用 ~75 GB（权重 + KV cache + prompt cache + MTP context）
+5. 新请求触发 `prompt_save` 分配额外内存 → 超过 128 GB RAM + 8 GB swap → OOM Kill
+
+**关键发现：** Prompt cache 在 slot 空闲时**不会自动释放**。`--cache-idle-slots` 可以解决，但它需要 `--kv-unified`，而 `--kv-unified` 在 27B MTP 上不兼容（触发 Vulkan 崩溃路径 #2）。`parallel = 1` 只有一个 slot，prompt cache 不会翻倍——8 GB 上限在 128 GB RAM 下可控。
+
+**缓解措施：**
+- 27B Q8：`parallel = 1`，`ctx-size = 262144`（单 slot，262K 上下文）
+- 省约 4 GB KV cache 预分配（1 slot vs 2 slot）
+- 消除 prompt cache 翻倍风险（1 slot 最多 8 GB vs 2 slot 潜在 16 GB）
+
+**待完成（需要 sudo）：**
+- Swap 从 8 GB 扩容到 32 GB
+- 时区设置为 Asia/Shanghai
 
 ---
 

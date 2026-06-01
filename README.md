@@ -230,7 +230,6 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `--cache-ram` | Pinned alloc fails on unified memory and is 4.6% slower; default prompt cache is better |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
-| No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it. |
 | 35B MoE: `parallel = 3`, `ctx-size = 786432` | 3 concurrent slots, each gets 262K context (ctx-size ÷ parallel); memory sufficient on 128 GB GTT (main models) |
 | 27B Q8: `parallel = 2`, `ctx-size = 524288` | 2 concurrent slots (each 262K); single-user scenario |
 | 27B Q6/Q4: `parallel = 2`, `ctx-size = 524288` | 2 concurrent slots (each 262K); `parallel = 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
@@ -239,17 +238,20 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
+| Onduty subdirectory (`~/model/onduty/`) | Only 2 models in dir + `models-max 2` = both models always loaded, no LRU eviction; symlinks to parent dir keep single copy of model files |
+| aux: `reasoning = off`, compact ctx | Disabling reasoning on aux saves memory + avoids thinking token overhead; 196608 ctx (3 slots × 65K) is sufficient for auxiliary tasks |
 
 ### Usage Constraints
 
 | Constraint | Value | Reason |
 |-----------|-------|--------|
 | 35B MoE max concurrent slots | 3 (`parallel = 3`) | `ctx-size = 786432` (786432 ÷ 3 = 262K per slot) |
+| aux (35B APEX I-Q) max concurrent slots | 3 (`parallel = 3`) | `ctx-size = 196608` (196608 ÷ 3 = 65K per slot); reasoning disabled |
 | 27B Q8 max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); single-user scenario |
 | 27B Q6/Q4 max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); `parallel = 3` triggers Vulkan bug |
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
-| Thinking mode | Main models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking tokens; no performance cost |
+| Thinking mode | Main models: enabled (`reasoning-budget=8192`); aux: disabled (`reasoning=off`) | Budget cap prevents runaway thinking; aux doesn't need thinking for auxiliary tasks |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B: up to 2 | Multi-slot supported; concurrent requests share GPU compute (~33% t/s each at full load for 35B) |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
@@ -259,12 +261,79 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 
 | Scope | Where | Examples |
 |-------|-------|---------|
-| **Server-level** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout` |
+| **Server-level** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout`, `--sleep-idle-seconds` |
 | **Model-level** | `router-preset.ini` per-model section | `n-gpu-layers`, `ctx-size`, `ubatch-size`, `threads`, `alias`, `spec-type`, `mlock`, `numa`, ... |
 
 > Model parameters are defined **only** in the INI — never duplicated in the service file.
 
 ### Preset INI (Per-Model Parameters)
+
+### Onduty Deployment (Dual-Model Persistent)
+
+To keep both the main model (278) and auxiliary model (aux) always loaded without LRU eviction, use a dedicated subdirectory with only 2 models:
+
+```
+~/model/onduty/
+├── Qwen3.6-27B-UD-Q8_K_XL.gguf → ../ (symlink)
+├── Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf → ../ (symlink)
+├── mmproj-F16.gguf → ../ (symlink)
+└── onduty-preset.ini
+```
+
+**Key principle:** Directory has exactly 2 `.gguf` models + `models-max 2` → both models are always loaded. No third model to compete for LRU eviction.
+
+**Setup:**
+```bash
+mkdir -p ~/model/onduty
+cd ~/model/onduty
+ln -sf ../Qwen3.6-27B-UD-Q8_K_XL.gguf .
+ln -sf ../Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf .
+ln -sf ../mmproj-F16.gguf .
+# Create onduty-preset.ini (see below)
+# Update llm-router.service: --models-dir ~/model/onduty --models-max 2 --models-preset ~/model/onduty/onduty-preset.ini
+```
+
+**Memory:** 95.7 GB used / 131 GB total, ~35 GB available, swap ~445 MB. Sufficient headroom.
+
+**File:** `~/model/onduty/onduty-preset.ini`
+
+```ini
+[Qwen3.6-27B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 2
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+cache-type-k = q8_0
+cache-type-v = q8_0
+ctx-size = 524288
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = 278
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/zxw/model/onduty/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning = off
+reasoning-budget = 0
+ctx-size = 196608
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = aux
+```
+
+### Full Preset INI (All Models)
 
 **File:** `~/model/router-preset.ini`
 
@@ -426,8 +495,10 @@ cmake --build build -j$(nproc)
 | Item | Path |
 |------|------|
 | Model files + preset INI | `$HOME/model/` |
+| Onduty (always-loaded) models | `$HOME/model/onduty/` |
 | llama-server binary | `$HOME/llama/llama.cpp/build/bin/llama-server` |
-| Router preset | `$HOME/model/router-preset.ini` |
+| Router preset (all models) | `$HOME/model/router-preset.ini` |
+| Onduty preset (278 + aux) | `$HOME/model/onduty/onduty-preset.ini` |
 
 ### Model Inventory
 
@@ -438,18 +509,21 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 | Source | Short | Models | Description |
 |--------|-------|--------|-------------|
 | [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | **UD-35B** | 358 | Unsloth Dynamic quant for 35B MoE |
-| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35b | APEX adaptive-precision quant for 35B MoE |
+| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35b, aux | APEX adaptive-precision quant for 35B MoE |
 | [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278, 276, 274 | Unsloth Dynamic quant for 27B Dense |
 
 | Alias | File | Source | Quant | Arch | Size | Active Params | Role |
 |-------|------|--------|-------|------|------|---------------|------|
 | **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Main (quality) |
 | **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Main (fastest) |
+| **aux** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Auxiliary (vision, fast, no reasoning) |
 | **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Main (default) |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Main |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Main |
 
-> **Alias naming convention:** APEX main model uses `35b` for balanced. UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests. The system runs in **single-model mode** (`models-max 1`): one model loaded at a time, swapped by LRU on demand.
+> **Alias naming convention:** APEX main model uses `35b` for balanced, `aux` for auxiliary (I-Quality). UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
+>
+> **Onduty deployment** (`~/model/onduty/`): Only 278 + aux are always loaded (`models-max 2`). Other models (358/35b/276/274) are available from the full `~/model/` directory by switching the service config. The `aux` model is a lightweight 35B APEX I-Quality with reasoning disabled, compact context (65K per slot), and mmproj for vision tasks.
 
 ### 1. Cloud Nginx Configuration
 
@@ -611,9 +685,9 @@ ExecStart=/home/zxw/llama/llama.cpp/build/bin/llama-server \
     --host 127.0.0.1 --port 12345 \
     --api-key {your_api_key} \
     -a Qwen3.6 \
-    --models-dir /home/zxw/model \
-    --models-max 1 \
-    --models-preset /home/zxw/model/router-preset.ini \
+    --models-dir /home/zxw/model/onduty \
+    --models-max 2 \
+    --models-preset /home/zxw/model/onduty/onduty-preset.ini \
     --timeout 600 \
     --metrics
 Restart=on-failure
@@ -624,6 +698,8 @@ LimitMEMLOCK=infinity
 [Install]
 WantedBy=default.target
 ```
+
+> **Note:** This uses the **onduty** subdirectory with only 2 models (278 + aux). To switch to the full model directory with all 5 models (single-model LRU mode), change `--models-dir /home/zxw/model`, `--models-max 1`, and `--models-preset /home/zxw/model/router-preset.ini`.
 
 ```bash
 systemctl --user daemon-reload
@@ -685,6 +761,10 @@ providers:
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true
+      "aux":
+        context_length: 65536      # 196608 ÷ 3 = 65K per slot
+        max_output_tokens: 32768
+        supports_vision: true
     request_timeout_seconds: 3600  # API request timeout
     stale_timeout_seconds: 900    # non-stream stale detection
 
@@ -733,7 +813,7 @@ hermes -z 'question' --model 35b       # oneshot with specific model
 QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, QQ, webchat).
 
 **Provider config** (`~/.qclaw/openclaw.json`):
-- `myllm` provider → `https://dashenzhiyan.com/v1/`, 5 models (358/278/276/274/35b)
+- `myllm` provider → `https://dashenzhiyan.com/v1/`, 6 models (358/278/276/274/35b/aux)
 - Per-model: `contextWindow: 262144`, `maxTokens: 32768`, reasoning enabled
 - `injectNumCtxForOpenAICompat: false`
 - Default model: `qclaw/pool-glm-5.1` (cloud proxy); xiaowei agent uses `myllm/358`
@@ -747,10 +827,12 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] `llm-tunnel.service` created and **active**
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
-- [ ] `~/model/router-preset.ini` configured with model-level params + aliases
-- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns 5 models with aliases (358/278/276/274/35b)
+- [ ] `~/model/onduty/onduty-preset.ini` configured (278 + aux, onduty mode)
+- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (fallback)
+- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
+- [ ] Onduty mode: both 278 and aux show status `loaded` after first request
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
-- [ ] Alias routing: `curl -d '{"model":"358",...}'` routes to 35B-A3B Q8
+- [ ] Alias routing: `curl -d '{"model":"278",...}'` and `curl -d '{"model":"aux",...}'` both work
 
 **Quick smoke test:**
 ```bash
@@ -835,7 +917,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ### OOM Kill with Dual-Model + Prompt Cache Accumulation
 
-**Status:** Resolved — reverted to `models-max 1`
+**Status:** Resolved — onduty subdirectory deployment prevents LRU eviction and OOM
 
 **Affected scenario:** Main model (27B Q8) + aux model coexist in dual-model mode (`models-max 2`), with `parallel = 2` on the main model.
 
@@ -850,17 +932,14 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Key insight:** Prompt cache is **not automatically released** when slots are idle. `--cache-idle-slots` would help, but it requires `--kv-unified` which is incompatible with 27B MTP (triggers Vulkan crash path #2).
 
-**Mitigation:**
-- `models-max 1` — single model at a time eliminates dual-model OOM entirely
-- 27B Q8: `parallel = 2`, `ctx-size = 524288` (restored; dual-model mode removed, so no OOM risk from aux)
+**Resolution — Onduty subdirectory:**
+- Create `~/model/onduty/` with only 2 model symlinks (278 + aux I-Quality) + dedicated `onduty-preset.ini`
+- `models-max 2` with exactly 2 models in directory = both always loaded, no LRU eviction
+- aux uses compact config: `reasoning=off`, `ctx-size=196608` (3×65K), saving ~10 GB vs full-size dual-model
+- Memory headroom: 95.7 GB used / 131 GB total, ~35 GB available
+- Original `~/model/router-preset.ini` and single-model config preserved for fallback
 
-**Root cause:** Dual-model mode (`models-max 2`) with main model + aux coexisting caused combined memory to approach 128 GB. When aux was loaded on demand, the router's LRU could evict the main model mid-task, breaking long conversations. The router has no "persistent model" feature — all models are subject to LRU eviction.
-
-**Resolution:** Reverted to `models-max 1` (single model, no aux). Router mode is retained for QClaw, which routes auxiliary requests to its own cloud cluster instead of local inference. Future local auxiliary model deployment will use a separate llama-server process on a dedicated port.
-
-**Pending (requires sudo):**
-- Increase swap from 8 GB to 32 GB
-- Set timezone to Asia/Shanghai
+**Fallback:** To use all 5 models with single-model LRU mode, change service config: `--models-dir /home/zxw/model --models-max 1 --models-preset /home/zxw/model/router-preset.ini`
 
 ---
 

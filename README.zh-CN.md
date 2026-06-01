@@ -238,17 +238,20 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 不加 `--no-mmap` | 无收益，`--mmap`（默认）+ `--mlock` 是最佳组合 |
 | `-a Qwen3.6` | 设置 API 响应中的 model 字段；客户端需校验 model 字段时必须 |
 | alias 短名路由 | 无需符号链接；别名和文件名均可路由 |
+| Onduty 子目录（`~/model/onduty/`） | 目录仅 2 个模型 + `models-max 2` = 两模型常驻，无 LRU 淘汰；symlink 指向父目录，模型文件只保留一份 |
+| aux: `reasoning = off`，紧凑 ctx | 禁用推理节省内存 + 避免 thinking token 开销；196608 ctx (3 slot × 65K) 对辅助任务已足够 |
 
 ### 使用约束
 
 | 约束 | 值 | 原因 |
 |------|---|------|
 | 35B MoE 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 786432`（786432 ÷ 3 = 每 slot 262K） |
-| 27B Q8 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；单用户场景 |
+| aux (35B APEX I-Q) 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 196608`（196608 ÷ 3 = 每 slot 65K）；reasoning 已禁用 |
+| 27B Q8 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K） |
 | 27B Q6/Q4 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
-| Thinking 模式 | 主模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；无性能损失 |
+| Thinking 模式 | 主模型：已开启（`reasoning-budget=8192`）；aux：已禁用（`reasoning=off`） | Budget 上限防止思考 token 失控增长；aux 辅助任务不需要 thinking |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 并发 | 35B 最多 3 个，27B 最多 2 个 | 多 slot 已启用；并发请求共享 GPU 算力（35B 满载时每个约 33% t/s） |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
@@ -258,12 +261,79 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 
 | 范围 | 位置 | 示例 |
 |------|------|------|
-| **服务级** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout` |
+| **服务级** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout`, `--sleep-idle-seconds` |
 | **模型级** | `router-preset.ini` 每模型 section | `n-gpu-layers`, `ctx-size`, `ubatch-size`, `threads`, `alias`, `spec-type`, `mlock`, `numa`, ... |
 
 > 模型参数**仅在 INI 中定义**，不在 service 文件中重复。
 
 ### Preset INI（模型级参数）
+
+### Onduty 双模型部署（常驻）
+
+保持主模型（278）和辅助模型（aux）始终加载、不受 LRU 淘汰，使用专用子目录仅放 2 个模型：
+
+```
+~/model/onduty/
+├── Qwen3.6-27B-UD-Q8_K_XL.gguf → ../ (symlink)
+├── Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf → ../ (symlink)
+├── mmproj-F16.gguf → ../ (symlink)
+└── onduty-preset.ini
+```
+
+**核心原理：** 目录只有 2 个 `.gguf` 模型 + `models-max 2` → 两模型常驻，无第三者竞争 LRU 淘汰。
+
+**部署：**
+```bash
+mkdir -p ~/model/onduty
+cd ~/model/onduty
+ln -sf ../Qwen3.6-27B-UD-Q8_K_XL.gguf .
+ln -sf ../Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf .
+ln -sf ../mmproj-F16.gguf .
+# 创建 onduty-preset.ini（见下方）
+# 更新 llm-router.service: --models-dir ~/model/onduty --models-max 2 --models-preset ~/model/onduty/onduty-preset.ini
+```
+
+**内存：** 95.7 GB 已用 / 131 GB 总计，~35 GB 可用，swap ~445 MB。充裕余量。
+
+**文件：** `~/model/onduty/onduty-preset.ini`
+
+```ini
+[Qwen3.6-27B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 2
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+cache-type-k = q8_0
+cache-type-v = q8_0
+ctx-size = 524288
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = 278
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/zxw/model/onduty/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning = off
+reasoning-budget = 0
+ctx-size = 196608
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = aux
+```
+
+### 全量 Preset INI（所有模型）
 
 **文件：** `~/model/router-preset.ini`
 
@@ -425,8 +495,10 @@ cmake --build build -j$(nproc)
 | 项目 | 路径 |
 |------|------|
 | 模型文件 + preset INI | `$HOME/model/` |
+| Onduty（常驻）模型 | `$HOME/model/onduty/` |
 | llama-server 二进制 | `$HOME/llama/llama.cpp/build/bin/llama-server` |
-| Router preset | `$HOME/model/router-preset.ini` |
+| Router preset（全模型） | `$HOME/model/router-preset.ini` |
+| Onduty preset（278 + aux） | `$HOME/model/onduty/onduty-preset.ini` |
 
 ### 模型清单
 
@@ -437,18 +509,21 @@ Router Mode 从 `$HOME/model/` 提供所有模型服务。单模型模式（`--m
 | 来源 | 缩写 | 模型 | 描述 |
 |------|------|------|------|
 | [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | **UD-35B** | 358 | Unsloth Dynamic 量化，35B MoE |
-| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35b | APEX 自适应精度量化，35B MoE |
+| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35b, aux | APEX 自适应精度量化，35B MoE |
 | [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278, 276, 274 | Unsloth Dynamic 量化，27B Dense |
 
 | 别名 | 文件名 | 来源 | 量化 | 架构 | 大小 | 激活参数 | 角色 |
 |------|--------|------|------|------|------|----------|------|
 | **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~24 GB | 3B | 主力（质量） |
 | **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | 主力（最快） |
+| **aux** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~22 GB | 3B | 辅助（视觉，快速，无推理） |
 | **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | 主力（默认） |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | 主力 |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | 主力 |
 
-> **别名命名规则：** APEX 主模型使用 `35b` 表示平衡。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可在 API 请求中使用。系统以**单模型模式**运行（`models-max 1`）：一次加载一个模型，通过 LRU 切换。
+> **别名命名规则：** APEX 主模型使用 `35b` 表示平衡，`aux` 表示辅助（I-Quality）。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可在 API 请求中使用。
+>
+> **Onduty 部署**（`~/model/onduty/`）：仅 278 + aux 常驻加载（`models-max 2`）。其他模型（358/35b/276/274）可通过切换 service 配置使用完整 `~/model/` 目录。`aux` 是轻量 35B APEX I-Quality 模型，禁用 reasoning，紧凑上下文（每 slot 65K），保留 mmproj 支持视觉任务。
 
 ### 1. 云端 Nginx 配置
 
@@ -608,9 +683,9 @@ ExecStart=/home/zxw/llama/llama.cpp/build/bin/llama-server \
     --host 127.0.0.1 --port 12345 \
     --api-key {your_api_key} \
     -a Qwen3.6 \
-    --models-dir /home/zxw/model \
-    --models-max 1 \
-    --models-preset /home/zxw/model/router-preset.ini \
+    --models-dir /home/zxw/model/onduty \
+    --models-max 2 \
+    --models-preset /home/zxw/model/onduty/onduty-preset.ini \
     --timeout 600 \
     --metrics
 Restart=on-failure
@@ -621,6 +696,8 @@ LimitMEMLOCK=infinity
 [Install]
 WantedBy=default.target
 ```
+
+> **注意：** 当前使用 **onduty** 子目录，仅含 2 个模型（278 + aux）。若要切换到全模型单模式 LRU 模式（5 模型），修改 `--models-dir /home/zxw/model`、`--models-max 1`、`--models-preset /home/zxw/model/router-preset.ini`。
 
 ```bash
 systemctl --user daemon-reload
@@ -682,6 +759,10 @@ providers:
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true
+      "aux":
+        context_length: 65536      # 196608 ÷ 3 = 每 slot 65K
+        max_output_tokens: 32768
+        supports_vision: true
     request_timeout_seconds: 3600  # API 请求超时
     stale_timeout_seconds: 900    # 非流式停滞检测
 
@@ -730,7 +811,7 @@ hermes -z '问题' --model 35b           # 指定模型的 oneshot
 QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webchat）。
 
 **Provider 配置**（`~/.qclaw/openclaw.json`）：
-- `myllm` provider → `https://dashenzhiyan.com/v1/`，5 个模型（358/278/276/274/35b）
+- `myllm` provider → `https://dashenzhiyan.com/v1/`，6 个模型（358/278/276/274/35b/aux）
 - 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启
 - `injectNumCtxForOpenAICompat: false`
 - 默认模型：`qclaw/pool-glm-5.1`（云端代理）；xiaowei agent 使用 `myllm/358`
@@ -744,10 +825,12 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 - [ ] `llm-tunnel.service` 已创建并 **运行中**
 - [ ] 云端 `ss -tlnp | grep 8080` 确认隧道监听
 - [ ] `llm-router.service` 已创建并 **运行中**（仅服务级参数）
-- [ ] `~/model/router-preset.ini` 配置正确（模型级参数 + alias）
-- [ ] 云端：`curl http://127.0.0.1:8080/v1/models` 返回 5 个模型 + aliases
+- [ ] `~/model/onduty/onduty-preset.ini` 配置正确（278 + aux，onduty 模式）
+- [ ] `~/model/router-preset.ini` 配置正确（全模型参数 + alias，备用）
+- [ ] 云端：`curl http://127.0.0.1:8080/v1/models` 返回模型 + aliases
+- [ ] Onduty 模式：首次请求后 278 和 aux 均显示 status `loaded`
 - [ ] 外网：`curl https://{your_domain}/health` 返回 `OK`
-- [ ] 别名路由：`curl -d '{"model":"358",...}'` 路由到 35B-A3B Q8
+- [ ] 别名路由：`curl -d '{"model":"278",...}'` 和 `curl -d '{"model":"aux",...}'` 均可正常响应
 
 **快速冒烟测试：**
 ```bash
@@ -832,7 +915,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ### 双模型 + Prompt Cache 累积导致 OOM Kill
 
-**状态：** 已解决——恢复为 `models-max 1`
+**状态：** 已解决——通过 onduty 子目录方案避免 LRU 淘汰和 OOM
 
 **受影响场景：** 主模型（27B Q8）+ aux 辅助模型在双模型模式下共存（`models-max 2`），主模型 `parallel = 2`。
 
@@ -847,15 +930,14 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **关键发现：** Prompt cache 在 slot 空闲时**不会自动释放**。`--cache-idle-slots` 可以解决，但它需要 `--kv-unified`，而 `--kv-unified` 在 27B MTP 上不兼容（触发 Vulkan 崩溃路径 #2）。
 
-**解决方案：**
-- `models-max 1` — 单模型模式彻底消除双模型 OOM
-- 27B Q8：`parallel = 2`，`ctx-size = 524288`（已恢复；双模型模式已移除，不再有 aux 带来的 OOM 风险）
+**解决方案——Onduty 子目录：**
+- 创建 `~/model/onduty/` 子目录，仅含 2 个模型 symlink（278 + aux I-Quality）+ 专用 `onduty-preset.ini`
+- `models-max 2` + 目录仅 2 个模型 = 两模型常驻，无 LRU 淘汰
+- aux 使用紧凑配置：`reasoning=off`，`ctx-size=196608`（3×65K），比全量双模型节省 ~10 GB
+- 内存余量：95.7 GB 已用 / 131 GB 总计，~35 GB 可用
+- 原始 `~/model/router-preset.ini` 和单模型配置保留，可随时切换
 
-**根因总结：** 双模型模式（`models-max 2`）下主模型 + aux 共存导致总内存接近 128 GB。当 aux 被按需加载时，router 的 LRU 会淘汰主模型，中断长对话。Router 没有"常驻模型"功能——所有模型都受 LRU 淘汰。恢复为 `models-max 1`（单模型，无 aux）。Router 模式保留给 QClaw，其辅助请求路由到云端集群而非本地推理。未来本地辅助模型部署将使用独立 llama-server 进程 + 专用端口。
-
-**待完成（需要 sudo）：**
-- Swap 从 8 GB 扩容到 32 GB
-- 时区设置为 Asia/Shanghai
+**备用方案：** 若要使用全量 5 模型单模式 LRU，修改 service 配置：`--models-dir /home/zxw/model --models-max 1 --models-preset /home/zxw/model/router-preset.ini`
 
 ---
 

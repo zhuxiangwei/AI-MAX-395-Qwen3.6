@@ -264,8 +264,6 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | **Model-level** | `router-preset.ini` per-model section | `n-gpu-layers`, `ctx-size`, `ubatch-size`, `threads`, `alias`, `spec-type`, `mlock`, `numa`, ... |
 
 > Model parameters are defined **only** in the INI — never duplicated in the service file.
-
-> Model parameters are defined **only** in the INI — never duplicated in the service file.
 >
 > The full Preset INI and service config are included in each client section below (Hermes / QClaw).
 
@@ -688,6 +686,8 @@ parallel = 1
 ctx-size = 262144
 batch-size = 4096
 ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -752,6 +752,8 @@ parallel = 2
 ctx-size = 524288
 batch-size = 4096
 ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -766,7 +768,9 @@ flash-attn = 1
 parallel = 2
 ctx-size = 524288
 batch-size = 4096
-ubatch-size = 512
+ubatch-size = 1024
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -822,6 +826,8 @@ parallel = 2
 ctx-size = 524288
 batch-size = 4096
 ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -886,6 +892,8 @@ parallel = 2
 ctx-size = 524288
 batch-size = 4096
 ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -900,7 +908,9 @@ flash-attn = 1
 parallel = 2
 ctx-size = 524288
 batch-size = 4096
-ubatch-size = 512
+ubatch-size = 1024
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -1022,7 +1032,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 1. `--sleep-idle-seconds 600` unloads the 35q model after 10 minutes of inactivity, releasing memory
 2. Next request for 35q triggers a cold reload → model weights read from disk + `mlock` into RAM
 3. During cold reload, both 278 (already loaded) and 35q (loading) coexist in memory
-4. 278 runs with `parallel = 2` → large KV cache pre-allocation + prompt cache accumulation
+4. 278 runs with `parallel = 2` (pre-fix config) → large KV cache pre-allocation + prompt cache accumulation
 5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
 
 **Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 278 and 35q are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.

@@ -264,8 +264,6 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | **服务级** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout` |
 | **模型级** | `router-preset.ini` 每模型 section | `n-gpu-layers`, `ctx-size`, `ubatch-size`, `threads`, `alias`, `spec-type`, `mlock`, `numa`, ... |
 
-> 模型参数**仅在 INI 中定义**，不在 service 文件中重复。
-
 > 模型参数**仅**在 INI 中定义——不要在 service 文件中重复。
 >
 > 完整的 Preset INI 和 service 配置见下方各客户端章节（Hermes / QClaw）。
@@ -687,6 +685,8 @@ parallel = 1
 ctx-size = 262144
 batch-size = 4096
 ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -751,6 +751,8 @@ parallel = 2
 ctx-size = 524288
 batch-size = 4096
 ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -765,7 +767,9 @@ flash-attn = 1
 parallel = 2
 ctx-size = 524288
 batch-size = 4096
-ubatch-size = 512
+ubatch-size = 1024
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -821,6 +825,8 @@ parallel = 2
 ctx-size = 524288
 batch-size = 4096
 ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -885,6 +891,8 @@ parallel = 2
 ctx-size = 524288
 batch-size = 4096
 ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -899,7 +907,9 @@ flash-attn = 1
 parallel = 2
 ctx-size = 524288
 batch-size = 4096
-ubatch-size = 512
+ubatch-size = 1024
+cache-type-k = q8_0
+cache-type-v = q8_0
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -1021,7 +1031,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 1. `--sleep-idle-seconds 600` 在 35q 空闲 10 分钟后卸载，释放内存
 2. 下次请求 35q 触发冷重载 → 模型权重从磁盘读入 + `mlock` 锁定到 RAM
 3. 冷重载期间，278（已加载）和 35q（加载中）共存于内存
-4. 278 以 `parallel = 2` 运行 → 大量 KV cache 预分配 + prompt cache 累积
+4. 278 以 `parallel = 2` 运行（修复前配置）→ 大量 KV cache 预分配 + prompt cache 累积
 5. 冷重载内存尖峰超过 128 GB RAM + 8 GB swap → OOM Kill
 
 **关键发现：** 不加 `--sleep-idle-seconds`，已加载的模型会保持常驻。由于客户端（Hermes、QClaw）仅请求 278 和 35q，两模型在 `models-max 2` 下会无限期保持加载，LRU 淘汰不会发生。空闲卸载/重载循环才是 OOM 的根因。

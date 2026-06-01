@@ -776,6 +776,14 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - `injectNumCtxForOpenAICompat: false`
 - Default model: `qclaw/pool-glm-5.1` (cloud proxy); xiaowei agent uses `myllm/358`
 
+**Model usage:**
+- `278` — primary model for all main sessions (27B Q8, 262K context)
+- `aux` — auxiliary tasks (35B APEX I-Quality, reasoning off, 65K context, vision enabled)
+- `358`/`35b` — 35B MoE (vision enabled, 262K context); xiaowei agent default
+- `276`/`274` — 27B Q6/Q4 fallback
+
+**Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
+
 ### Verification Checklist
 
 - [ ] Cloud Nginx config updated (with `/v1/` and `/health` endpoints)

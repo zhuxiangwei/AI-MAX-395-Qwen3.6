@@ -716,13 +716,51 @@ providers:
     stale_timeout_seconds: 900    # non-stream stale detection
 
 model:
-  default: "358"
+  default: "278"
   provider: "custom:local-llm"
   base_url: "https://dashenzhiyan.com/v1"
   extra_body:
     chat_template_kwargs:
       enable_thinking: true
 max_tokens: 32768                 # must ≥ reasoning-budget + expected output
+
+auxiliary:
+  title_generation:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  triage_specifier:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  approval:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  skills_hub:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  mcp:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  profile_describer:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  compression:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  web_extract:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 60
+  vision:
+    provider: "custom:local-llm"
+    model: "aux"
+    timeout: 120
 
 streaming:
   enabled: true                  # gateway bot streaming (editMessage)

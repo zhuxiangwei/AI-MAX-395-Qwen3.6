@@ -231,7 +231,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失（仅主模型） |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）混入思考和回答，产生重复输出。不要添加 |
 | 35B MoE: `parallel = 3`，`ctx-size = 786432` | 3 个并发 slot，每个分配 262K 上下文（ctx-size ÷ parallel）；128 GB GTT 内存充裕（主模型） |
-| 27B Q8: `parallel = 1`，`ctx-size = 262144` | 单 slot（262K）；双模型加载 35q 时降低内存占用（`models-max 2`） |
+| 27B Q8: `parallel = 1`，`ctx-size = 262144` | 双模型模式（Hermes）：与 35q 共存时降低内存占用；QClaw 单模型模式使用 `parallel = 2, ctx-size = 524288` |
 | 27B Q6/Q4: `parallel = 2`，`ctx-size = 524288` | 2 个并发 slot（每个 262K）；`parallel = 3` 在 27B Dense 上触发 Vulkan bug（见已知问题） |
 | `--spec-draft-n-max 3` | 4 比 3 慢 20.6% |
 | 全部模型 `-t 8` | 全 GPU 卸载下 t=8 vs t=16 无实质差异，t=8 更低温 |
@@ -239,7 +239,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | `-a Qwen3.6` | 设置 API 响应中的 model 字段；客户端需校验 model 字段时必须 |
 | alias 短名路由 | 无需符号链接；别名和文件名均可路由 |
 | 35q: `reasoning = off`，紧凑 ctx | 禁用推理节省内存 + 避免 thinking token 开销；196608 ctx (3 slot × 65K) 对辅助任务已足够 |
-| 不加 `--sleep-idle-seconds` | `models-max 2` 下已加载模型常驻；空闲卸载→重载循环会导致内存尖峰和 OOM（见已知问题） |
+| 不加 `--sleep-idle-seconds` | 两种模式均不加：已加载模型常驻；空闲卸载→重载循环会导致内存尖峰和 OOM（见已知问题） |
 
 ### 使用约束
 
@@ -247,7 +247,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 |------|---|------|
 | 35B MoE 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 786432`（786432 ÷ 3 = 每 slot 262K） |
 | 35q (35B APEX I-Q) 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 196608`（196608 ÷ 3 = 每 slot 65K）；reasoning 已禁用 |
-| 27B Q8 最大并发槽位 | 1 (`parallel = 1`) | `ctx-size = 262144`；parallel=1 给双模型加载 35q 时留内存余量 |
+| 27B Q8 最大并发槽位 | 1 (`parallel = 1`) / 2 (`parallel = 2`) | Hermes 双模型：`ctx-size = 262144` + `parallel = 1`；QClaw 单模型：`ctx-size = 524288` + `parallel = 2` |
 | 27B Q6/Q4 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
@@ -305,13 +305,56 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 组件 | 规格 |
 |------|------|
 | 机型 | FEVM faex1 迷你主机 |
-| APU | AMD Ryzen AI Max+ 395 (16C/32T) |
+| APU | AMD Ryzen AI Max+ 395 (16C, SMT 已关闭) |
 | 内存 | 128 GB LPDDR5X (256-bit, 统一内存) |
 | 存储 | 1 TB NVMe SSD |
 | 核显 | Radeon 8060S (RDNA 3.5, 40 CU, 2040 MHz) |
 | GTT (GPU 可访问内存) | 120 GB (内核参数 `amdgpu.gttsize=122880`) |
 
 **内存带宽：** 256-bit × 8000 MT/s ÷ 8 = **256 GB/s** 理论值，~200 GB/s 实际值。Dense 模型受内存带宽限制。
+
+### BIOS 配置
+
+| 设置项 | 值 | 目的 |
+|--------|-----|------|
+| SMT（同步多线程） | **Disabled** | LLM 推理受内存带宽限制；关闭 SMT 减少缓存争抢，提升 KV cache 命中率 |
+| GFX Workstation Support | **Disabled** | 无头推理不需要；释放资源 |
+| iGPU Mem Bar Configuration | **ResizableBAR** | 允许 GPU 访问完整系统内存以加载大型模型权重 |
+| UMA Version | **Non-Legacy** | ResizableBAR 和大容量统一内存分配的必要条件 |
+| Dedicated Graphics Memory | **0.5G** | 最小分配；模型权重通过 GTT 由系统内存承载 |
+
+> **为什么关闭 SMT？** 统一内存上的 LLM 推理是带宽受限的（256 GB/s）。SMT 增加了共享 L3 缓存的线程争抢，但无法提升带宽利用率。实测表明关闭 SMT 后缓存命中率更稳定，延迟更低。
+
+### GRUB 内核参数
+
+**文件：** `/etc/default/grub`
+
+```bash
+GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880"
+```
+
+- `amd_iommu=off` — 禁用 IOMMU，减少 GPU DMA 的内存转换开销
+- `amdgpu.gttsize=122880` — 设置 GPU 可访问的系统内存（GTT）为 120 GB，允许 iGPU 访问几乎全部 128 GB RAM 用于模型权重
+
+**应用：** `sudo update-grub && sudo reboot`
+
+### Swap 配置
+
+```bash
+# 查看当前 swap
+swapon --show
+
+# 创建 32 GB swap 文件
+sudo fallocate -l 32G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# 开机自动挂载
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+> 32 GB swap 为双模型冷加载内存尖峰提供安全余量。在移除 `--sleep-idle-seconds` 且模型常驻的情况下，实际 swap 使用极少（实测 ~17 MB）。
 
 ### 软件
 
@@ -366,9 +409,11 @@ Router Mode 从 `$HOME/model/` 提供所有模型服务。单模型模式（`--m
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | 主力 |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | 主力 |
 
-> **别名命名规则：** APEX 主模型使用 `35b` 表示平衡，`35q` 表示辅助（I-Quality）。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可在 API 请求中使用。
+> **别名命名规则：** APEX 主模型使用 `35b` 表示平衡，`35q` 表示辅助（I-Quality）。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可在 API 请求中使用。注意：Hermes 使用 `aux` 作为 I-Quality 模型的别名，而非 `35q`。
 >
-> **双模型模式**（`models-max 2`）：278 + 35q 通常同时加载。由于客户端（Hermes、QClaw）只请求 278 和 35q，LRU 淘汰不会触发。`35q` 是轻量 35B APEX I-Quality 模型，禁用 reasoning，紧凑上下文（每 slot 65K），保留 mmproj 支持视觉任务。**不要**加 `--sleep-idle-seconds`——空闲卸载/重载循环会导致内存尖峰和 OOM。
+> **部署模式：**
+> - **Hermes**（双模型常驻）：`models-max 2` → 278 + aux 共存常驻，无 LRU 淘汰，不加 `--sleep-idle-seconds`。278 使用 `parallel = 1` 为 aux 留内存余量。
+> - **QClaw**（单模型 LRU）：`models-max 1` → 一次加载一个模型，按请求切换（冷加载 8–17 秒）。不加 `--sleep-idle-seconds`。278 使用 `parallel = 2` 充分利用吞吐。
 
 ### 1. 云端 Nginx 配置
 
@@ -542,7 +587,11 @@ LimitMEMLOCK=infinity
 WantedBy=default.target
 ```
 
-> **注意：** 当前使用完整模型目录 + `models-max 2`（278 + 35q 通常同时加载；不加 `--sleep-idle-seconds`）。若要使用单模型 LRU 模式，修改 `--models-max 1`。
+> **注意：** 服务配置因部署模式不同而异：
+> - **Hermes**（双模型常驻）：`--models-max 2`，不加 `--sleep-idle-seconds`
+> - **QClaw**（单模型 LRU）：`--models-max 1`，不加 `--sleep-idle-seconds`
+>
+> 两种模式共用 `--models-dir` 和 `--models-preset`，但 Preset INI 参数不同（278 的 `parallel` 和 `ctx-size` 因模式而异）。具体配置见各客户端章节。
 
 ```bash
 systemctl --user daemon-reload
@@ -646,7 +695,7 @@ hermes -z '问题' --model 35b           # 指定模型的 oneshot
 
 **TUI 常用命令：** `/model 358` 切换模型、`/skills` 查看技能、`/help` 全部命令、`Ctrl+C` 中断回复、`Ctrl+D` 或 `/exit` 退出。
 
-**推理服务**（`llm-router.service`）：
+**推理服务——双模型常驻模式**（`llm-router.service`）：
 ```ini
 [Unit]
 Description=LLM Router Service (llama-server multi-model)
@@ -671,8 +720,9 @@ LimitMEMLOCK=infinity
 [Install]
 WantedBy=default.target
 ```
+> 双模型模式：278 + aux 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。
 
-**推理服务 Preset INI**（`~/model/router-preset.ini`）：
+**Preset INI**（`~/model/router-preset.ini`）：
 ```ini
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
@@ -779,13 +829,13 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 - `injectNumCtxForOpenAICompat: false`
 - 默认模型：`qclaw/pool-glm-5.1`（云端代理）
 
-**推理服务 Preset INI**（`~/model/router-preset.ini`）：
+**Preset INI**（`~/model/router-preset.ini`）：
 ```ini
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
-ctx-size = 262144
+parallel = 2
+ctx-size = 524288
 batch-size = 4096
 ubatch-size = 512
 spec-type = draft-mtp
@@ -878,7 +928,7 @@ alias = 274
 
 **流式输出：** 微信/QQ/企微: blockStreaming；Telegram/Discord/Slack: 编辑消息式流式
 
-**推理服务**（`llm-router.service`）：
+**推理服务——单模型 LRU 模式**（`llm-router.service`）：
 ```ini
 [Unit]
 Description=LLM Router Service (llama-server multi-model)
@@ -891,7 +941,7 @@ ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --api-key {your_api_key} \
     -a Qwen3.6 \
     --models-dir /home/$USER/model \
-    --models-max 2 \
+    --models-max 1 \
     --models-preset /home/$USER/model/router-preset.ini \
     --timeout 600 \
     --metrics
@@ -903,6 +953,7 @@ LimitMEMLOCK=infinity
 [Install]
 WantedBy=default.target
 ```
+> 单模型 LRU 模式：一次加载一个模型，按请求切换（冷加载 8–17 秒）。不加 `--sleep-idle-seconds`。
 
 ### 验证清单
 
@@ -913,9 +964,10 @@ WantedBy=default.target
 - [ ] `llm-tunnel.service` 已创建并 **运行中**
 - [ ] 云端 `ss -tlnp | grep 8080` 确认隧道监听
 - [ ] `llm-router.service` 已创建并 **运行中**（仅服务级参数）
-- [ ] `~/model/router-preset.ini` 配置正确（全模型参数 + alias，含 35q）
+- [ ] `~/model/router-preset.ini` 配置正确（全模型参数 + alias，QClaw 用 35q，Hermes 用 aux）
 - [ ] 云端：`curl http://127.0.0.1:8080/v1/models` 返回模型 + aliases
-- [ ] 双模型模式：首次请求后 278 和 35q 均显示 status `loaded`
+- [ ] 双模型模式（Hermes）：首次请求后 278 和 aux 均显示 status `loaded`
+- [ ] 单模型模式（QClaw）：模型通过 LRU 按请求切换（冷加载 8–17 秒）
 - [ ] 服务配置不含 `--sleep-idle-seconds`（防止重载循环导致 OOM）
 - [ ] 外网：`curl https://{your_domain}/health` 返回 `OK`
 - [ ] 别名路由：`curl -d '{"model":"278",...}'` 和 `curl -d '{"model":"35q",...}'` 均可正常响应

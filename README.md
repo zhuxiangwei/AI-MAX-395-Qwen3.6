@@ -231,7 +231,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | 35B MoE: `parallel = 3`, `ctx-size = 786432` | 3 concurrent slots, each gets 262K context (ctx-size ÷ parallel); memory sufficient on 128 GB GTT (main models) |
-| 27B Q8: `parallel = 1`, `ctx-size = 262144` | Single slot (262K); reduces memory when dual-model loaded with 35q (`models-max 2`) |
+| 27B Q8: `parallel = 1`, `ctx-size = 262144` | Dual-model mode (Hermes): reduces memory when loaded with 35q; QClaw single-model mode uses `parallel = 2, ctx-size = 524288` |
 | 27B Q6/Q4: `parallel = 2`, `ctx-size = 524288` | 2 concurrent slots (each 262K); `parallel = 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
@@ -239,14 +239,14 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
 | 35q: `reasoning = off`, compact ctx | Disabling reasoning on auxiliary model saves memory + avoids thinking token overhead; 196608 ctx (3 slots × 65K) is sufficient for auxiliary tasks |
-| No `--sleep-idle-seconds` | With `models-max 2`, loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
+| No `--sleep-idle-seconds` | Both modes: loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
 
 ### Usage Constraints
 
 | Constraint | Value | Reason |
 |-----------|-------|--------|
 | 35B MoE max concurrent slots | 3 (`parallel = 3`) | `ctx-size = 786432` (786432 ÷ 3 = 262K per slot) |
-| 27B Q8 max concurrent slots | 1 (`parallel = 1`) | `ctx-size = 262144`; parallel=1 leaves memory headroom when dual-model loaded with 35q |
+| 27B Q8 max concurrent slots | 1 (`parallel = 1`) / 2 (`parallel = 2`) | Hermes dual-model: `ctx-size = 262144` + `parallel = 1`; QClaw single-model: `ctx-size = 524288` + `parallel = 2` |
 | 27B Q6/Q4 max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); `parallel = 3` triggers Vulkan bug |
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
@@ -304,13 +304,56 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Component | Specification |
 |-----------|--------------|
 | Machine | FEVM faex1 mini PC |
-| APU | AMD Ryzen AI Max+ 395 (16C/32T) |
+| APU | AMD Ryzen AI Max+ 395 (16C, SMT disabled) |
 | Memory | 128 GB LPDDR5X (256-bit, unified memory) |
 | Storage | 1 TB NVMe SSD |
 | iGPU | Radeon 8060S (RDNA 3.5, 40 CU, 2040 MHz) |
 | GTT (GPU-accessible RAM) | 120 GB (kernel param `amdgpu.gttsize=122880`) |
 
 **Memory bandwidth:** 256-bit × 8000 MT/s ÷ 8 = **256 GB/s** theoretical, ~200 GB/s practical. Dense models are memory-bandwidth bound.
+
+### BIOS Configuration
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| SMT (Simultaneous Multithreading) | **Disabled** | LLM inference is memory-bandwidth bound; disabling SMT reduces cache contention and improves KV cache hit rates |
+| GFX Workstation Support | **Disabled** | Not needed for headless inference; frees resources |
+| iGPU Mem Bar Configuration | **ResizableBAR** | Allows GPU to access full system memory for large model weights |
+| UMA Version | **Non-Legacy** | Required for ResizableBAR and large unified memory allocation |
+| Dedicated Graphics Memory | **0.5G** | Minimum allocation; system memory handles model weights via GTT |
+
+> **Why disable SMT?** LLM inference on unified memory is bandwidth-bound (256 GB/s). SMT adds thread contention on shared L3 cache without improving bandwidth utilization. Real-world testing shows improved cache hit rates and more stable latency with SMT off.
+
+### GRUB Kernel Parameters
+
+**File:** `/etc/default/grub`
+
+```bash
+GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880"
+```
+
+- `amd_iommu=off` — disables IOMMU, reduces memory translation overhead for GPU DMA
+- `amdgpu.gttsize=122880` — sets GPU-accessible system memory (GTT) to 120 GB, allowing the iGPU to access nearly all 128 GB RAM for model weights
+
+**Apply:** `sudo update-grub && sudo reboot`
+
+### Swap Configuration
+
+```bash
+# Check current swap
+swapon --show
+
+# Create 32 GB swap file
+sudo fallocate -l 32G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# Persist across reboots
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+> 32 GB swap provides safety margin for dual-model cold-load memory spikes. With `--sleep-idle-seconds` removed and models resident, actual swap usage should be minimal (~17 MB observed).
 
 ### Software
 
@@ -367,7 +410,9 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 
 > **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests. Note: Hermes uses `aux` as the alias for the I-Quality model instead of `35q`.
 >
-> **Dual-model mode** (`models-max 2`): 278 + 35q are typically loaded simultaneously. Since only 278 and 35q are actively requested by clients (Hermes, QClaw), LRU eviction does not occur. The `35q` model is a lightweight 35B APEX I-Quality with reasoning disabled, compact context (65K per slot), and mmproj for vision tasks. Do **not** add `--sleep-idle-seconds` — idle-unload/reload cycles cause memory spikes leading to OOM.
+> **Deployment modes:**
+> - **Hermes** (dual-model resident): `models-max 2` → 278 + aux co-resident, no LRU eviction, no `--sleep-idle-seconds`. 278 uses `parallel = 1` to leave memory headroom for aux.
+> - **QClaw** (single-model LRU): `models-max 1` → one model at a time, switching on request (8–17s cold load). No `--sleep-idle-seconds`. 278 uses `parallel = 2` for full throughput.
 
 ### 1. Cloud Nginx Configuration
 
@@ -543,7 +588,11 @@ LimitMEMLOCK=infinity
 WantedBy=default.target
 ```
 
-> **Note:** This uses the full model directory with `models-max 2` (278 + 35q typically loaded simultaneously; no `--sleep-idle-seconds`). To use single-model LRU mode, change `--models-max 1`.
+> **Note:** The service config differs between deployment modes:
+> - **Hermes** (dual-model resident): `--models-max 2`, no `--sleep-idle-seconds`
+> - **QClaw** (single-model LRU): `--models-max 1`, no `--sleep-idle-seconds`
+>
+> Both modes share the same `--models-dir` and `--models-preset`, but the Preset INI parameters differ (278 `parallel` and `ctx-size` vary by mode). See each client section for the exact configuration.
 
 ```bash
 systemctl --user daemon-reload
@@ -647,7 +696,7 @@ hermes -z 'question' --model 35b       # oneshot with specific model
 
 **TUI commands:** `/model 358` switch model, `/skills` list skills, `/help` all commands, `Ctrl+C` interrupt, `Ctrl+D` or `/exit` quit.
 
-**Inference server** (`llm-router.service`):
+**Inference server — dual-model resident mode** (`llm-router.service`):
 ```ini
 [Unit]
 Description=LLM Router Service (llama-server multi-model)
@@ -672,8 +721,9 @@ LimitMEMLOCK=infinity
 [Install]
 WantedBy=default.target
 ```
+> Dual-model mode: 278 + aux co-resident, no `--sleep-idle-seconds` (prevents OOM from reload cycles).
 
-**Inference server Preset INI** (`~/model/router-preset.ini`):
+**Preset INI** (`~/model/router-preset.ini`):
 ```ini
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
@@ -780,13 +830,13 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - `injectNumCtxForOpenAICompat: false`
 - Default model: `qclaw/pool-glm-5.1` (cloud proxy)
 
-**Inference server Preset INI** (`~/model/router-preset.ini`):
+**Preset INI** (`~/model/router-preset.ini`):
 ```ini
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 1
-ctx-size = 262144
+parallel = 2
+ctx-size = 524288
 batch-size = 4096
 ubatch-size = 512
 spec-type = draft-mtp
@@ -879,7 +929,7 @@ alias = 274
 
 **Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
 
-**Inference server** (`llm-router.service`):
+**Inference server — single-model LRU mode** (`llm-router.service`):
 ```ini
 [Unit]
 Description=LLM Router Service (llama-server multi-model)
@@ -892,7 +942,7 @@ ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --api-key {your_api_key} \
     -a Qwen3.6 \
     --models-dir /home/$USER/model \
-    --models-max 2 \
+    --models-max 1 \
     --models-preset /home/$USER/model/router-preset.ini \
     --timeout 600 \
     --metrics
@@ -904,6 +954,7 @@ LimitMEMLOCK=infinity
 [Install]
 WantedBy=default.target
 ```
+> Single-model LRU mode: one model loaded at a time, switching on client request (8–17s cold load). No `--sleep-idle-seconds`.
 
 ### Verification Checklist
 
@@ -914,9 +965,10 @@ WantedBy=default.target
 - [ ] `llm-tunnel.service` created and **active**
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
-- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (including 35q)
+- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (35q for QClaw, aux for Hermes)
 - [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
-- [ ] Dual-model mode: both 278 and 35q show status `loaded` after first request
+- [ ] Dual-model mode (Hermes): both 278 and aux show status `loaded` after first request
+- [ ] Single-model mode (QClaw): model switches via LRU on client request (8–17s cold load)
 - [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
 - [ ] Alias routing: `curl -d '{"model":"278",...}'` and `curl -d '{"model":"35q",...}'` both work

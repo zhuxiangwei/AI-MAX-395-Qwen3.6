@@ -501,10 +501,10 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # 长超时（LLM 推理耗时，匹配 llama-server 超时）
-        proxy_read_timeout 600s;
+        # 长超时（LLM 推理耗时，匹配客户端超时）
+        proxy_read_timeout 3600s;
         proxy_connect_timeout 60s;
-        proxy_send_timeout 600s;
+        proxy_send_timeout 3600s;
 
         # SSE 流式响应支持
         proxy_set_header Connection '';

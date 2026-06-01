@@ -42,9 +42,9 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 > Gen speed is nearly identical across UB=256/512 (±2 t/s). UB choice mainly affects prefill/TTFT: UB=512 is faster at ≤128K; UB=256 is faster at 256K.
 
-### 35B-A3B MoE APEX I-Quality (alias `aux`, ~22 GB)
+### 35B-A3B MoE APEX I-Quality (alias `35q` in QClaw, `aux` in Hermes, ~22 GB)
 
-APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Now repurposed as the **auxiliary model** (`aux`): reasoning disabled, compact context (64K per slot), with mmproj for vision tasks.
+APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Now repurposed as the **auxiliary model**: reasoning disabled, compact context (64K per slot), with mmproj for vision tasks.
 
 **Optimal config: F16 KV cache.** Same pattern as 35B UD-Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
 
@@ -167,7 +167,7 @@ Dense model, Q4 quantization — fastest generation among Dense models.
 
 ### Cross-Model Comparison (Optimal Configs)
 
-| Prompt | APEX I-Q (aux) | APEX I-B | 35B UD-Q8 | 27B Q8 | 27B Q6 | 27B Q4 |
+| Prompt | APEX I-Q | APEX I-B | 35B UD-Q8 | 27B Q8 | 27B Q6 | 27B Q4 |
 |--------|---------|---------|--------|--------|--------|--------|
 | p128 Gen | 84.1 | 78.2 | 56.7 | 13.8 | 18.9 | 26.5 |
 | p4K Gen | 80.3 | 78.9 | 56.7 | 13.4 | 17.2 | 25.1 |
@@ -183,7 +183,7 @@ Dense model, Q4 quantization — fastest generation among Dense models.
 
 8 questions covering math, logic, CS, and philosophy. Scored by keyword matching (max 10 per question, total 80). All models use F16 KV + UB=512 + MTP (`--spec-type draft-mtp --spec-draft-n-max 3`).
 
-| Question | aux (I-Q) | 35b (I-B) | 358 (Q8) |
+| Question | 35q (I-Q) | 35b (I-B) | 358 (Q8) |
 |----------|-----------|-----------|----------|
 | Gaussian sum (1+2+...+100) | 10/10 | 10/10 | 10/10 |
 | Syllogism validity | 0/10 | 4/10 | 4/10 |
@@ -204,13 +204,13 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 
 | Image | Prompt tokens | Model | Gen (t/s) | MTP accept rate | Elapsed |
 |-------|-------------|-------|-----------|----------------|---------|
-| Baby sleeping (83 KB) | 939 | aux | **73.5** | 55.8% | 16.7s |
+| Baby sleeping (83 KB) | 939 | 35q | **73.5** | 55.8% | 16.7s |
 | | | 35b | 69.6 | 52.4% | 14.6s |
 | | | 358 | 51.2 | 50.9% | 18.3s |
-| Outdoor photo (1.4 MB) | 2059 | aux | **69.8** | 52.3% | 22.3s |
+| Outdoor photo (1.4 MB) | 2059 | 35q | **69.8** | 52.3% | 22.3s |
 | | | 35b | 65.4 | 48.4% | 23.4s |
 | | | 358 | 49.3 | 48.2% | 28.4s |
-| Birthday photo (2.8 MB) | 4034 | aux | 70.5 | 53.9% | 35.2s |
+| Birthday photo (2.8 MB) | 4034 | 35q | 70.5 | 53.9% | 35.2s |
 | | | 35b | **71.1** | 56.6% | 35.2s |
 | | | 358 | 53.5 | 55.2% | 39.9s |
 
@@ -231,14 +231,14 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | 35B MoE: `parallel = 3`, `ctx-size = 786432` | 3 concurrent slots, each gets 262K context (ctx-size ÷ parallel); memory sufficient on 128 GB GTT (main models) |
-| 27B Q8: `parallel = 1`, `ctx-size = 262144` | Single slot (262K); reduces memory when dual-model loaded with aux (`models-max 2`) |
+| 27B Q8: `parallel = 1`, `ctx-size = 262144` | Single slot (262K); reduces memory when dual-model loaded with 35q (`models-max 2`) |
 | 27B Q6/Q4: `parallel = 2`, `ctx-size = 524288` | 2 concurrent slots (each 262K); `parallel = 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
-| aux: `reasoning = off`, compact ctx | Disabling reasoning on aux saves memory + avoids thinking token overhead; 196608 ctx (3 slots × 65K) is sufficient for auxiliary tasks |
+| 35q: `reasoning = off`, compact ctx | Disabling reasoning on auxiliary model saves memory + avoids thinking token overhead; 196608 ctx (3 slots × 65K) is sufficient for auxiliary tasks |
 | No `--sleep-idle-seconds` | With `models-max 2`, loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
 
 ### Usage Constraints
@@ -246,11 +246,11 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Constraint | Value | Reason |
 |-----------|-------|--------|
 | 35B MoE max concurrent slots | 3 (`parallel = 3`) | `ctx-size = 786432` (786432 ÷ 3 = 262K per slot) |
-| 27B Q8 max concurrent slots | 1 (`parallel = 1`) | `ctx-size = 262144`; parallel=1 leaves memory headroom when dual-model loaded with aux |
+| 27B Q8 max concurrent slots | 1 (`parallel = 1`) | `ctx-size = 262144`; parallel=1 leaves memory headroom when dual-model loaded with 35q |
 | 27B Q6/Q4 max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); `parallel = 3` triggers Vulkan bug |
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
-| Thinking mode | Main models: enabled (`reasoning-budget=8192`); aux: disabled (`reasoning=off`) | Budget cap prevents runaway thinking; aux doesn't need thinking for auxiliary tasks |
+| Thinking mode | Main models: enabled (`reasoning-budget=8192`); 35q: disabled (`reasoning=off`) | Budget cap prevents runaway thinking; auxiliary model doesn't need thinking |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
 | No `--cache-ram` | Don't add it | Harmful on unified memory |
@@ -276,7 +276,7 @@ flash-attn = 1
 parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
-mmproj = /home/zxw/model/mmproj-F16.gguf
+mmproj = /home//model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
@@ -292,7 +292,7 @@ flash-attn = 1
 parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
-mmproj = /home/zxw/model/mmproj-F16.gguf
+mmproj = /home//model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning = off
@@ -301,7 +301,7 @@ ctx-size = 196608
 batch-size = 4096
 ubatch-size = 512
 threads = 8
-alias = aux
+alias = 35q
 
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
 n-gpu-layers = 99
@@ -309,7 +309,7 @@ flash-attn = 1
 parallel = 3
 spec-type = draft-mtp
 spec-draft-n-max = 3
-mmproj = /home/zxw/model/mmproj-F16.gguf
+mmproj = /home//model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
@@ -472,21 +472,21 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 | Source | Short | Models | Description |
 |--------|-------|--------|-------------|
 | [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | **UD-35B** | 358 | Unsloth Dynamic quant for 35B MoE |
-| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35b, aux | APEX adaptive-precision quant for 35B MoE |
+| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35b, 35q | APEX adaptive-precision quant for 35B MoE |
 | [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278, 276, 274 | Unsloth Dynamic quant for 27B Dense |
 
 | Alias | File | Source | Quant | Arch | Size | Active Params | Role |
 |-------|------|--------|-------|------|------|---------------|------|
 | **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Main (quality) |
 | **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Main (fastest) |
-| **aux** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Auxiliary (vision, fast, no reasoning) |
+| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Auxiliary (vision, fast, no reasoning) |
 | **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Main (default) |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Main |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Main |
 
-> **Alias naming convention:** APEX main model uses `35b` for balanced, `aux` for auxiliary (I-Quality). UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
+> **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests. Note: Hermes uses `aux` as the alias for the I-Quality model instead of `35q`.
 >
-> **Dual-model mode** (`models-max 2`): 278 + aux are typically loaded simultaneously. Since only 278 and aux are actively requested by clients (Hermes, QClaw), LRU eviction does not occur. The `aux` model is a lightweight 35B APEX I-Quality with reasoning disabled, compact context (65K per slot), and mmproj for vision tasks. Do **not** add `--sleep-idle-seconds` — idle-unload/reload cycles cause memory spikes leading to OOM.
+> **Dual-model mode** (`models-max 2`): 278 + 35q are typically loaded simultaneously. Since only 278 and 35q are actively requested by clients (Hermes, QClaw), LRU eviction does not occur. The `35q` model is a lightweight 35B APEX I-Quality with reasoning disabled, compact context (65K per slot), and mmproj for vision tasks. Do **not** add `--sleep-idle-seconds` — idle-unload/reload cycles cause memory spikes leading to OOM.
 
 ### 1. Cloud Nginx Configuration
 
@@ -644,13 +644,13 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/zxw/llama/llama.cpp/build/bin/llama-server \
+ExecStart=/home//llama/llama.cpp/build/bin/llama-server \
     --host 127.0.0.1 --port 12345 \
     --api-key {your_api_key} \
     -a Qwen3.6 \
-    --models-dir /home/zxw/model \
+    --models-dir /home//model \
     --models-max 2 \
-    --models-preset /home/zxw/model/router-preset.ini \
+    --models-preset /home//model/router-preset.ini \
     --timeout 600 \
     --metrics
 Restart=on-failure
@@ -662,7 +662,7 @@ LimitMEMLOCK=infinity
 WantedBy=default.target
 ```
 
-> **Note:** This uses the full model directory with `models-max 2` (278 + aux typically loaded simultaneously; no `--sleep-idle-seconds`). To use single-model LRU mode, change `--models-max 1`.
+> **Note:** This uses the full model directory with `models-max 2` (278 + 35q typically loaded simultaneously; no `--sleep-idle-seconds`). To use single-model LRU mode, change `--models-max 1`.
 
 ```bash
 systemctl --user daemon-reload
@@ -701,8 +701,8 @@ curl https://{your_domain}/v1/chat/completions \
 providers:
   local-llm:
     name: "Local LLM (Strix Halo)"
-    base_url: "https://dashenzhiyan.com/v1"
-    key_env: "DASHENZHIYAN_API_KEY"
+    base_url: "https://{your_domain}/v1"
+    key_env: "LLM_API_KEY"
     extra_body:
       chat_template_kwargs:
         enable_thinking: true       # enables thinking mode
@@ -734,7 +734,7 @@ providers:
 model:
   default: "278"
   provider: "custom:local-llm"
-  base_url: "https://dashenzhiyan.com/v1"
+  base_url: "https://{your_domain}/v1"
   extra_body:
     chat_template_kwargs:
       enable_thinking: true
@@ -750,7 +750,7 @@ compression:
 
 **Configuration notes:**
 - `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
-- `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
+- `key_env: "LLM_API_KEY"` — set in `~/.hermes/.env`
 - `supports_vision: true` on 35B models only (358/35b have mmproj); 27B Dense has no vision
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
@@ -771,10 +771,107 @@ hermes -z 'question' --model 35b       # oneshot with specific model
 QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, QQ, webchat).
 
 **Provider config** (`~/.qclaw/openclaw.json`):
-- `myllm` provider → `https://dashenzhiyan.com/v1/`, 6 models (358/278/276/274/35q/35b)
+- `myllm` provider → `https://{your_domain}/v1/`, 6 models (358/278/276/274/35q/35b)
 - Per-model: `contextWindow: 262144`, `maxTokens: 32768`, reasoning enabled
 - `injectNumCtxForOpenAICompat: false`
-- Default model: `qclaw/pool-glm-5.1` (cloud proxy); xiaowei agent uses `myllm/358`
+- Default model: `qclaw/pool-glm-5.1` (cloud proxy)
+
+**Inference server Preset INI** (`~/model/router-preset.ini`):
+```ini
+[Qwen3.6-27B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 278
+
+[Qwen3.6-35B-A3B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+ctx-size = 786432
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 358
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+ctx-size = 786432
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 35b
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning = off
+reasoning-budget = 0
+ctx-size = 196608
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = 35q
+
+[Qwen3.6-27B-UD-Q6_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 2
+ctx-size = 524288
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 276
+
+[Qwen3.6-27B-UD-Q4_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 2
+ctx-size = 524288
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 274
+```
 
 **Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
 
@@ -787,12 +884,12 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] `llm-tunnel.service` created and **active**
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
-- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (including aux)
+- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (including 35q)
 - [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
-- [ ] Dual-model mode: both 278 and aux show status `loaded` after first request
+- [ ] Dual-model mode: both 278 and 35q show status `loaded` after first request
 - [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
-- [ ] Alias routing: `curl -d '{"model":"278",...}'` and `curl -d '{"model":"aux",...}'` both work
+- [ ] Alias routing: `curl -d '{"model":"278",...}'` and `curl -d '{"model":"35q",...}'` both work
 
 **Quick smoke test:**
 ```bash
@@ -833,7 +930,7 @@ curl https://{your_domain}/v1/chat/completions \
 
 **Status:** Open — waiting for upstream fix (PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453))
 
-**Affected models:** 27B Dense series (aliases `278`/`276`/`274`). 35B MoE models (aliases `358`/`35b`/`aux`) are **not** affected.
+**Affected models:** 27B Dense series (aliases `278`/`276`/`274`). 35B MoE models (aliases `358`/`35b`/`35q`) are **not** affected.
 
 **Symptom:** `llama-server` aborts with `GGML_ASSERT` failure when processing any request on 27B Dense models with `parallel ≥ 3` and MTP enabled.
 
@@ -850,7 +947,7 @@ ctx-size = 786432
 
 **Crash output:**
 ```
-/home/zxw/llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
+/home//llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
 ```
 
 **Root cause:** Vulkan backend uses device-only (unified) memory buffers. Per-slot KV cache tensors have `tensor->data == NULL` on the host side (data lives on GPU). `ggml_backend_tensor_get()` and related functions unconditionally assert `tensor->data != NULL`, which fails when the prompt cache system attempts to save/restore slot state (including MTP draft context). The crash occurs in two paths:
@@ -879,25 +976,25 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Resolved — removed `--sleep-idle-seconds` from service config
 
-**Affected scenario:** Main model (27B Q8) + aux model in dual-model mode (`models-max 2`), with `--sleep-idle-seconds` configured.
+**Affected scenario:** Main model (27B Q8) + 35q model in dual-model mode (`models-max 2`), with `--sleep-idle-seconds` configured.
 
 **Symptom:** Linux OOM killer terminates `llama-server` after hours of operation.
 
 **Root cause chain:**
-1. `--sleep-idle-seconds 600` unloads the aux model after 10 minutes of inactivity, releasing memory
-2. Next request for aux triggers a cold reload → model weights read from disk + `mlock` into RAM
-3. During cold reload, both 278 (already loaded) and aux (loading) coexist in memory
+1. `--sleep-idle-seconds 600` unloads the 35q model after 10 minutes of inactivity, releasing memory
+2. Next request for 35q triggers a cold reload → model weights read from disk + `mlock` into RAM
+3. During cold reload, both 278 (already loaded) and 35q (loading) coexist in memory
 4. 278 runs with `parallel = 2` → large KV cache pre-allocation + prompt cache accumulation
 5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
 
-**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 278 and aux are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
+**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 278 and 35q are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
 
 **Resolution:**
 - Removed `--sleep-idle-seconds` from service config
-- Reduced 278 to `parallel = 1`, `ctx-size = 262144` to leave memory headroom for aux
+- Reduced 278 to `parallel = 1`, `ctx-size = 262144` to leave memory headroom for 35q
 - Memory headroom: 80.6 GB used / 131 GB total, ~44 GB available, swap ~17 MB
 
-**Warning:** Do **not** re-add `--sleep-idle-seconds`. If a third model is requested (e.g., 358), LRU eviction will unload one of the two loaded models. This is expected behavior — the freed slot will be used for the requested model. If both 278 and aux must remain loaded, ensure no client requests a third model, or use a dedicated directory with only 2 models.
+**Warning:** Do **not** re-add `--sleep-idle-seconds`. If a third model is requested (e.g., 358), LRU eviction will unload one of the two loaded models. This is expected behavior — the freed slot will be used for the requested model. If both 278 and 35q must remain loaded, ensure no client requests a third model, or use a dedicated directory with only 2 models.
 
 ---
 

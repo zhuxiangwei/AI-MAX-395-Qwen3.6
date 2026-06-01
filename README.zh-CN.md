@@ -247,7 +247,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 |------|---|------|
 | 35B MoE 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 786432`（786432 ÷ 3 = 每 slot 262K） |
 | aux (35B APEX I-Q) 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 196608`（196608 ÷ 3 = 每 slot 65K）；reasoning 已禁用 |
-| 27B Q8 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K） |
+| 27B Q8 最大并发槽位 | 1 (`parallel = 1`) (onduty) / 2 (`parallel = 2`) (独立) | `ctx-size = 262144` (onduty) / `524288` (独立)；onduty 模式用 parallel=1 给 aux 留内存余量 |
 | 27B Q6/Q4 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
 | 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
 | 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
@@ -293,7 +293,7 @@ ln -sf ../mmproj-F16.gguf .
 # 更新 llm-router.service: --models-dir ~/model/onduty --models-max 2 --models-preset ~/model/onduty/onduty-preset.ini
 ```
 
-**内存：** 95.7 GB 已用 / 131 GB 总计，~35 GB 可用，swap ~445 MB。充裕余量。
+**内存：** 80.6 GB 已用 / 131 GB 总计，~44 GB 可用，swap ~17 MB。278 parallel=1 余量充足。
 
 **文件：** `~/model/onduty/onduty-preset.ini`
 
@@ -301,7 +301,7 @@ ln -sf ../mmproj-F16.gguf .
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 2
+parallel = 1
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -309,7 +309,7 @@ numa = distribute
 reasoning-budget = 8192
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 524288
+ctx-size = 262144
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -934,7 +934,8 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 - 创建 `~/model/onduty/` 子目录，仅含 2 个模型 symlink（278 + aux I-Quality）+ 专用 `onduty-preset.ini`
 - `models-max 2` + 目录仅 2 个模型 = 两模型常驻，无 LRU 淘汰
 - aux 使用紧凑配置：`reasoning=off`，`ctx-size=196608`（3×65K），比全量双模型节省 ~10 GB
-- 内存余量：95.7 GB 已用 / 131 GB 总计，~35 GB 可用
+- 278 使用 `parallel=1`，`ctx-size=262144`，给 aux 留内存余量
+- 内存余量：80.6 GB 已用 / 131 GB 总计，~44 GB 可用，swap ~17 MB
 - 原始 `~/model/router-preset.ini` 和单模型配置保留，可随时切换
 
 **备用方案：** 若要使用全量 5 模型单模式 LRU，修改 service 配置：`--models-dir /home/zxw/model --models-max 1 --models-preset /home/zxw/model/router-preset.ini`

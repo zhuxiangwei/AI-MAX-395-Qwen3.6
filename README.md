@@ -246,8 +246,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Constraint | Value | Reason |
 |-----------|-------|--------|
 | 35B MoE max concurrent slots | 3 (`parallel = 3`) | `ctx-size = 786432` (786432 ÷ 3 = 262K per slot) |
-| aux (35B APEX I-Q) max concurrent slots | 3 (`parallel = 3`) | `ctx-size = 196608` (196608 ÷ 3 = 65K per slot); reasoning disabled |
-| 27B Q8 max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); single-user scenario |
+| 27B Q8 max concurrent slots | 1 (`parallel = 1`) (onduty) / 2 (`parallel = 2`) (standalone) | `ctx-size = 262144` (onduty) / `524288` (standalone); onduty mode uses parallel=1 to leave memory headroom for aux |
 | 27B Q6/Q4 max concurrent slots | 2 (`parallel = 2`) | `ctx-size = 524288` (524288 ÷ 2 = 262K per slot); `parallel = 3` triggers Vulkan bug |
 | 35B MoE: max context | 256K | UB=512 optimal for ≤128K; UB=256 optimal for 256K; UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
 | 27B Dense: max context | 256K (Q8_0 KV) | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4); F16 KV p256K timeout; UB≥2048 Vulkan crash |
@@ -293,7 +292,7 @@ ln -sf ../mmproj-F16.gguf .
 # Update llm-router.service: --models-dir ~/model/onduty --models-max 2 --models-preset ~/model/onduty/onduty-preset.ini
 ```
 
-**Memory:** 95.7 GB used / 131 GB total, ~35 GB available, swap ~445 MB. Sufficient headroom.
+**Memory:** 80.6 GB used / 131 GB total, ~44 GB available, swap ~17 MB. Sufficient headroom with parallel=1 on 278.
 
 **File:** `~/model/onduty/onduty-preset.ini`
 
@@ -301,7 +300,7 @@ ln -sf ../mmproj-F16.gguf .
 [Qwen3.6-27B-UD-Q8_K_XL]
 n-gpu-layers = 99
 flash-attn = 1
-parallel = 2
+parallel = 1
 spec-type = draft-mtp
 spec-draft-n-max = 3
 mlock = 1
@@ -309,7 +308,7 @@ numa = distribute
 reasoning-budget = 8192
 cache-type-k = q8_0
 cache-type-v = q8_0
-ctx-size = 524288
+ctx-size = 262144
 batch-size = 4096
 ubatch-size = 512
 threads = 8
@@ -936,7 +935,8 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 - Create `~/model/onduty/` with only 2 model symlinks (278 + aux I-Quality) + dedicated `onduty-preset.ini`
 - `models-max 2` with exactly 2 models in directory = both always loaded, no LRU eviction
 - aux uses compact config: `reasoning=off`, `ctx-size=196608` (3×65K), saving ~10 GB vs full-size dual-model
-- Memory headroom: 95.7 GB used / 131 GB total, ~35 GB available
+- 278 uses `parallel=1`, `ctx-size=262144` to leave memory headroom for aux
+- Memory headroom: 80.6 GB used / 131 GB total, ~44 GB available, swap ~17 MB
 - Original `~/model/router-preset.ini` and single-model config preserved for fallback
 
 **Fallback:** To use all 5 models with single-model LRU mode, change service config: `--models-dir /home/zxw/model --models-max 1 --models-preset /home/zxw/model/router-preset.ini`

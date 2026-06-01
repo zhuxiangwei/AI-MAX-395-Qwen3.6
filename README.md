@@ -265,128 +265,9 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 
 > Model parameters are defined **only** in the INI — never duplicated in the service file.
 
-### Preset INI (Per-Model Parameters)
-
-**File:** `~/model/router-preset.ini`
-
-```ini
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home//model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 358
-
-[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home//model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning = off
-reasoning-budget = 0
-ctx-size = 196608
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 35q
-
-[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home//model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 35b
-
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 358
-
-[Qwen3.6-27B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 1           ; ⚠ parallel=2 with dual-model causes OOM; parallel=3 triggers Vulkan bug
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-cache-type-k = q8_0
-cache-type-v = q8_0
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 278
-
-[Qwen3.6-27B-UD-Q6_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2           ; ⚠ 3 triggers Vulkan bug (see Known Issues)
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-cache-type-k = q8_0
-cache-type-v = q8_0
-ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 276
-
-[Qwen3.6-27B-UD-Q4_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2           ; ⚠ 3 triggers Vulkan bug (see Known Issues)
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-cache-type-k = q8_0
-cache-type-v = q8_0
-ctx-size = 524288      ; 524288 ÷ 2 = 262K per slot
-batch-size = 4096
-ubatch-size = 1024
-threads = 8
-alias = 274
-```
-
-**To change model parameters:** edit the INI file → `systemctl --user restart llm-router`
+> Model parameters are defined **only** in the INI — never duplicated in the service file.
+>
+> The full Preset INI and service config are included in each client section below (Hermes / QClaw).
 
 ---
 
@@ -644,18 +525,18 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home//llama/llama.cpp/build/bin/llama-server \
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --host 127.0.0.1 --port 12345 \
     --api-key {your_api_key} \
     -a Qwen3.6 \
-    --models-dir /home//model \
+    --models-dir /home/$USER/model \
     --models-max 2 \
-    --models-preset /home//model/router-preset.ini \
+    --models-preset /home/$USER/model/router-preset.ini \
     --timeout 600 \
     --metrics
 Restart=on-failure
 RestartSec=10
-WorkingDirectory=/home/zxw
+WorkingDirectory=/home/$USER
 LimitMEMLOCK=infinity
 
 [Install]
@@ -766,6 +647,129 @@ hermes -z 'question' --model 35b       # oneshot with specific model
 
 **TUI commands:** `/model 358` switch model, `/skills` list skills, `/help` all commands, `Ctrl+C` interrupt, `Ctrl+D` or `/exit` quit.
 
+**Inference server** (`llm-router.service`):
+```ini
+[Unit]
+Description=LLM Router Service (llama-server multi-model)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
+    --host 127.0.0.1 --port 12345 \
+    --api-key {your_api_key} \
+    -a Qwen3.6 \
+    --models-dir /home/$USER/model \
+    --models-max 2 \
+    --models-preset /home/$USER/model/router-preset.ini \
+    --timeout 600 \
+    --metrics
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=/home/$USER
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target
+```
+
+**Inference server Preset INI** (`~/model/router-preset.ini`):
+```ini
+[Qwen3.6-27B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 278
+
+[Qwen3.6-35B-A3B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+ctx-size = 786432
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 358
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+ctx-size = 786432
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 35b
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning = off
+reasoning-budget = 0
+ctx-size = 196608
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = aux
+
+[Qwen3.6-27B-UD-Q6_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 2
+ctx-size = 524288
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 276
+
+[Qwen3.6-27B-UD-Q4_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 2
+ctx-size = 524288
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 274
+```
+
 #### QClaw
 
 QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, QQ, webchat).
@@ -875,6 +879,32 @@ alias = 274
 
 **Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
 
+**Inference server** (`llm-router.service`):
+```ini
+[Unit]
+Description=LLM Router Service (llama-server multi-model)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
+    --host 127.0.0.1 --port 12345 \
+    --api-key {your_api_key} \
+    -a Qwen3.6 \
+    --models-dir /home/$USER/model \
+    --models-max 2 \
+    --models-preset /home/$USER/model/router-preset.ini \
+    --timeout 600 \
+    --metrics
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=/home/$USER
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target
+```
+
 ### Verification Checklist
 
 - [ ] Cloud Nginx config updated (with `/v1/` and `/health` endpoints)
@@ -947,7 +977,7 @@ ctx-size = 786432
 
 **Crash output:**
 ```
-/home//llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
+/home/$USER/llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
 ```
 
 **Root cause:** Vulkan backend uses device-only (unified) memory buffers. Per-slot KV cache tensors have `tensor->data == NULL` on the host side (data lives on GPU). `ggml_backend_tensor_get()` and related functions unconditionally assert `tensor->data != NULL`, which fails when the prompt cache system attempts to save/restore slot state (including MTP draft context). The crash occurs in two paths:

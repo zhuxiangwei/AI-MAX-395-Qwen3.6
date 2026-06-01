@@ -266,128 +266,9 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 
 > 模型参数**仅在 INI 中定义**，不在 service 文件中重复。
 
-### Preset INI（模型级参数）
-
-**文件：** `~/model/router-preset.ini`
-
-```ini
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/\/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 358
-
-[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/\/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning = off
-reasoning-budget = 0
-ctx-size = 196608
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 35q
-
-[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/\/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 35b
-
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 358
-
-[Qwen3.6-27B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 1           ; ⚠ parallel=2 双模型加载时导致 OOM；parallel=3 触发 Vulkan bug
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-cache-type-k = q8_0
-cache-type-v = q8_0
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 278
-
-[Qwen3.6-27B-UD-Q6_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2           ; ⚠ 3 触发 Vulkan bug（见已知问题）
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-cache-type-k = q8_0
-cache-type-v = q8_0
-ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 276
-
-[Qwen3.6-27B-UD-Q4_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2           ; ⚠ 3 触发 Vulkan bug（见已知问题）
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-cache-type-k = q8_0
-cache-type-v = q8_0
-ctx-size = 524288      ; 524288 ÷ 2 = 每 slot 262K
-batch-size = 4096
-ubatch-size = 1024
-threads = 8
-alias = 274
-```
-
-**修改模型参数：** 编辑 INI 文件 → `systemctl --user restart llm-router`
+> 模型参数**仅**在 INI 中定义——不要在 service 文件中重复。
+>
+> 完整的 Preset INI 和 service 配置见下方各客户端章节（Hermes / QClaw）。
 
 ---
 
@@ -643,18 +524,18 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/\/llama/llama.cpp/build/bin/llama-server \
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --host 127.0.0.1 --port 12345 \
     --api-key {your_api_key} \
     -a Qwen3.6 \
-    --models-dir /home/\/model \
+    --models-dir /home/$USER/model \
     --models-max 2 \
-    --models-preset /home/\/model/router-preset.ini \
+    --models-preset /home/$USER/model/router-preset.ini \
     --timeout 600 \
     --metrics
 Restart=on-failure
 RestartSec=10
-WorkingDirectory=/home/zxw
+WorkingDirectory=/home/$USER
 LimitMEMLOCK=infinity
 
 [Install]
@@ -765,6 +646,129 @@ hermes -z '问题' --model 35b           # 指定模型的 oneshot
 
 **TUI 常用命令：** `/model 358` 切换模型、`/skills` 查看技能、`/help` 全部命令、`Ctrl+C` 中断回复、`Ctrl+D` 或 `/exit` 退出。
 
+**推理服务**（`llm-router.service`）：
+```ini
+[Unit]
+Description=LLM Router Service (llama-server multi-model)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
+    --host 127.0.0.1 --port 12345 \
+    --api-key {your_api_key} \
+    -a Qwen3.6 \
+    --models-dir /home/$USER/model \
+    --models-max 2 \
+    --models-preset /home/$USER/model/router-preset.ini \
+    --timeout 600 \
+    --metrics
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=/home/$USER
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target
+```
+
+**推理服务 Preset INI**（`~/model/router-preset.ini`）：
+```ini
+[Qwen3.6-27B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 278
+
+[Qwen3.6-35B-A3B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+ctx-size = 786432
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 358
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+ctx-size = 786432
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 35b
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 3
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning = off
+reasoning-budget = 0
+ctx-size = 196608
+batch-size = 4096
+ubatch-size = 512
+threads = 8
+alias = aux
+
+[Qwen3.6-27B-UD-Q6_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 2
+ctx-size = 524288
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 276
+
+[Qwen3.6-27B-UD-Q4_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 2
+ctx-size = 524288
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 274
+```
+
 #### QClaw
 
 QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webchat）。
@@ -874,6 +878,32 @@ alias = 274
 
 **流式输出：** 微信/QQ/企微: blockStreaming；Telegram/Discord/Slack: 编辑消息式流式
 
+**推理服务**（`llm-router.service`）：
+```ini
+[Unit]
+Description=LLM Router Service (llama-server multi-model)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
+    --host 127.0.0.1 --port 12345 \
+    --api-key {your_api_key} \
+    -a Qwen3.6 \
+    --models-dir /home/$USER/model \
+    --models-max 2 \
+    --models-preset /home/$USER/model/router-preset.ini \
+    --timeout 600 \
+    --metrics
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=/home/$USER
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target
+```
+
 ### 验证清单
 
 - [ ] 云端 Nginx 配置已更新（含 `/v1/` 和 `/health` 端点）
@@ -946,7 +976,7 @@ ctx-size = 786432
 
 **崩溃输出：**
 ```
-/home/\/llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
+/home/$USER/llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
 ```
 
 **根因：** Vulkan 后端使用 device-only（统一内存）缓冲区。每个 slot 的 KV cache tensor 在 host 端 `tensor->data == NULL`（数据在 GPU 上）。`ggml_backend_tensor_get()` 及相关函数无条件断言 `tensor->data != NULL`，当 prompt cache 系统尝试保存/恢复 slot 状态（包括 MTP draft context）时触发崩溃。崩溃发生在两条路径：

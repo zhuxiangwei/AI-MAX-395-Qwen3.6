@@ -748,17 +748,12 @@ compression:
 ```
 
 **配置要点：**
-- `provider: "custom:local-llm"` 走命名 providers 解析路径（`"custom"` direct-alias 会忽略 `extra_body`）
-- `key_env: "DASHENZHIYAN_API_KEY"` — API key 环境变量名从域名推导，需在 `~/.hermes/.env` 中设置
-- `supports_vision: true` 仅 35B MoE 模型（358/35b 配置了 mmproj）；27B Dense 无视觉能力
-- `max_output_tokens: 32768` — 不设置则 Hermes 默认 4096，长回复会被截断
-- `max_tokens: 32768` — 必须 ≥ `reasoning-budget`（8192）+ 预期输出；8192 会导致 thinking token 耗尽全部配额，截断 tool_calls 和回复
-- `chat_template_kwargs: enable_thinking: true` — 启用 Qwen3.6 思考模式；省略或设 `false` 可关闭
-- `streaming.enabled: true` — 启用 Gateway Bot 流式输出（Telegram/Discord/Slack 的 editMessageText）
-- `compression.threshold: 0.80` — 本地推理无 token 成本，延迟压缩触发；0.50 过于激进
-- `compression.target_ratio: 0.30` — 压缩后保留 0.80 × 0.30 × 262K ≈ 63K tokens 近期上下文
-- `request_timeout_seconds: 3600` — 思考模式需长超时（thinking 45–130s + 生成最多 300s）
-- `context_length: 262144` 对所有模型 — 这是**每 slot** 上下文（ctx-size ÷ parallel），不是总 ctx-size
+- `provider: "custom:local-llm"` — 走命名 providers 解析路径（`"custom"` direct-alias 会忽略 `extra_body`）
+- `key_env: "DASHENZHIYAN_API_KEY"` — 需在 `~/.hermes/.env` 中设置
+- `supports_vision: true` 仅 35B 模型（358/35b 配置了 mmproj）；27B Dense 无视觉能力
+- `max_tokens: 32768` — 必须 ≥ reasoning-budget (8192) + 预期输出；8192 不够
+- `chat_template_kwargs: enable_thinking: true` — 启用思考模式；省略或设 `false` 关闭
+- `context_length` 是每 slot 上下文（ctx-size ÷ parallel），不是总 ctx-size
 
 **使用方式：**
 ```bash
@@ -776,7 +771,7 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 
 **Provider 配置**（`~/.qclaw/openclaw.json`）：
 - `myllm` provider → `https://dashenzhiyan.com/v1/`，6 个模型（358/278/276/274/35b/aux）
-- 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启
+- 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启；aux: `contextWindow: 65536`
 - `injectNumCtxForOpenAICompat: false`
 - 默认模型：`qclaw/pool-glm-5.1`（云端代理）；xiaowei agent 使用 `myllm/358`
 

@@ -748,18 +748,13 @@ compression:
   target_ratio: 0.30             # keep 30% of threshold as recent tail
 ```
 
-**Key configuration notes:**
-- `provider: "custom:local-llm"` uses the named providers section (not `"custom"` direct-alias, which ignores `extra_body`)
-- `key_env: "DASHENZHIYAN_API_KEY"` — API key derived from domain name; must be set in `~/.hermes/.env`
-- `supports_vision: true` on 35B MoE models (358/35b have mmproj); 27B Dense models have no vision
-- `max_output_tokens: 32768` per model — without this, Hermes defaults to 4096 and truncates long responses
-- `max_tokens: 32768` — must be ≥ `reasoning-budget` (8192) + expected output; 8192 caused thinking tokens to consume the entire budget, truncating tool calls and responses
-- `chat_template_kwargs: enable_thinking: true` — enables Qwen3.6 thinking mode; omit or set `false` to disable
-- `streaming.enabled: true` — enables Gateway bot streaming (editMessageText on Telegram/Discord/Slack)
-- `compression.threshold: 0.80` — local inference has no token cost, so delay compression; 0.50 is too aggressive
-- `compression.target_ratio: 0.30` — after compression, keep 0.80 × 0.30 × 262K ≈ 63K tokens of recent context
-- `request_timeout_seconds: 3600` — long timeout for thinking mode (45–130s thinking + up to 300s generation)
-- `context_length: 262144` for all models — this is **per-slot** context (ctx-size ÷ parallel), not total ctx-size
+**Configuration notes:**
+- `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
+- `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
+- `supports_vision: true` on 35B models only (358/35b have mmproj); 27B Dense has no vision
+- `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
+- `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
+- `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
 
 **Usage:**
 ```bash
@@ -777,7 +772,7 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 
 **Provider config** (`~/.qclaw/openclaw.json`):
 - `myllm` provider → `https://dashenzhiyan.com/v1/`, 6 models (358/278/276/274/35b/aux)
-- Per-model: `contextWindow: 262144`, `maxTokens: 32768`, reasoning enabled
+- Per-model: `contextWindow: 262144`, `maxTokens: 32768`, reasoning enabled; aux: `contextWindow: 65536`
 - `injectNumCtxForOpenAICompat: false`
 - Default model: `qclaw/pool-glm-5.1` (cloud proxy); xiaowei agent uses `myllm/358`
 

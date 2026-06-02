@@ -599,6 +599,7 @@ batch-size = 4096
 ubatch-size = 512
 spec-type = draft-mtp
 spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192

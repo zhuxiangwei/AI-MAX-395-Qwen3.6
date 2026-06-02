@@ -42,7 +42,7 @@
 
 > Gen 速度在 UB=256/512 间几乎相同（±2 t/s）。UB 选择主要影响 prefill/TTFT：UB=512 在 ≤128K 更快；UB=256 在 256K 更快。
 
-### 35B-A3B MoE APEX I-Quality (别名 `35q`（QClaw）/ `aux`（Hermes）, ~22 GB)
+### 35B-A3B MoE APEX I-Quality (别名 `35q`, ~22 GB)
 
 APEX 量化——针对 MoE 的自适应精度策略。混合精度 per tensor（关键层 Q6_K/Q8_0，中间 expert 层 Q4_K_M）。整体 ~22 GB（按体积介于 Q4~Q5，但质量接近 Q8）。imatrix 多样化校准。**比 UD-Q8+MTP 快 48%，体积仅 59%。** 现已改造为**辅助模型**（`35q`）：紧凑上下文（每 slot 64K），保留 mmproj 支持视觉任务。Reasoning 默认开启（`reasoning-budget = 8192`）；客户端可通过 `chat_template_kwargs.enable_thinking: false` 在请求层面关闭 thinking。
 
@@ -225,35 +225,34 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 决策 | 理由 |
 |------|------|
 | Service = 服务级，INI = 模型级 | 层次清晰，改模型参数不碰 service 文件 |
-| 统一 256K 上下文 | -c 只预分配 KV cache，不影响性能；一套配置覆盖所有 prompt 长度 |
+| 统一 parallel=1, ctx=262144 | 简化配置；单用户负载无需并发 slot；双模型通过 `--models-max 2` 实现；256K 上下文覆盖所有 prompt 长度 |
 | 按量化等级差异化 ub | 量化越高权重越大，VRAM 余量越小，需更小 ub 保证稳定性；最优 UB 因模型而异（256–1024） |
 | 不使用 `--cache-ram` | 统一内存上 pinned alloc 失败且慢 4.6%；默认 prompt cache 更优 |
 | `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失（仅主模型） |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）混入思考和回答，产生重复输出。不要添加 |
-| 35B MoE: `parallel = 3`，`ctx-size = 786432` | 3 个并发 slot，每个分配 262K 上下文（ctx-size ÷ parallel）；128 GB GTT 内存充裕（主模型） |
-| 27B Q8: `parallel = 1`，`ctx-size = 262144` | 双模型模式（Hermes）：与 35q 共存时降低内存占用；QClaw 单模型模式使用 `parallel = 2, ctx-size = 524288` |
-| 27B Q6/Q4: `parallel = 2`，`ctx-size = 524288` | 2 个并发 slot（每个 262K）；`parallel = 3` 在 27B Dense 上触发 Vulkan bug（见已知问题） |
+| 所有模型: `parallel = 1`，`ctx-size = 262144` | 每 slot 256K 上下文；单用户负载无需并发 slot；`parallel > 1` 浪费 KV cache 内存 |
+| 服务：`--models-max 2` | 允许两个模型共存常驻（如 278 + 35q）；设为 1 可切换单模型 LRU 模式 |
+| 27B Dense: `parallel = 1` | `parallel ≥ 3` 在 27B Dense 上触发 Vulkan bug（见已知问题） |
 | `--spec-draft-n-max 3` | 4 比 3 慢 20.6% |
 | 全部模型 `-t 8` | 全 GPU 卸载下 t=8 vs t=16 无实质差异，t=8 更低温 |
 | 不加 `--no-mmap` | 无收益，`--mmap`（默认）+ `--mlock` 是最佳组合 |
 | `-a Qwen3.6` | 设置 API 响应中的 model 字段；客户端需校验 model 字段时必须 |
 | alias 短名路由 | 无需符号链接；别名和文件名均可路由 |
-| 35q: 不使用 `reasoning = off`，紧凑 ctx | `reasoning = off` 导致灾难性的 checkpoint 恢复变慢（43–75s vs <0.1s，见已知问题）。改用 `reasoning-budget = 8192`（默认值）；客户端可在请求层面关闭 thinking。196608 ctx (3 slot × 65K) 对辅助任务已足够 |
+| 35q: 不使用 `reasoning = off` | `reasoning = off` 导致灾难性的 checkpoint 恢复变慢（43–75s vs <0.1s，见已知问题）。改用 `reasoning-budget = 8192`（默认值）；客户端可在请求层面关闭 thinking |
 | 不加 `--sleep-idle-seconds` | 两种模式均不加：已加载模型常驻；空闲卸载→重载循环会导致内存尖峰和 OOM（见已知问题） |
 
 ### 使用约束
 
 | 约束 | 值 | 原因 |
 |------|---|------|
-| 35B MoE 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 786432`（786432 ÷ 3 = 每 slot 262K） |
-| 35q (35B APEX I-Q) 最大并发槽位 | 3 (`parallel = 3`) | `ctx-size = 196608`（196608 ÷ 3 = 每 slot 65K）；reasoning 已禁用 |
-| 27B Q8 最大并发槽位 | 1 (`parallel = 1`) / 2 (`parallel = 2`) | Hermes 双模型：`ctx-size = 262144` + `parallel = 1`；QClaw 单模型：`ctx-size = 524288` + `parallel = 2` |
-| 27B Q6/Q4 最大并发槽位 | 2 (`parallel = 2`) | `ctx-size = 524288`（524288 ÷ 2 = 每 slot 262K）；`parallel = 3` 触发 Vulkan bug |
-| 35B MoE 最大上下文 | 256K | UB=512 ≤128K 最优；UB=256 256K 最优；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
-| 27B Dense 最大上下文 | 256K (Q8_0 KV) | 推荐 Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4)；F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
+| 所有模型: 并发槽位 | 1 (`parallel = 1`) | 单用户负载；`parallel > 1` 浪费 KV cache 内存 |
+| 所有模型: 最大上下文 | 256K (`ctx-size = 262144`) | 统一上下文覆盖所有 prompt 长度 |
+| 27B Dense: `parallel` | 仅 1 | `parallel ≥ 3` 触发 Vulkan bug（见已知问题） |
+| 35B MoE: UB 约束 | UB=512 ≤128K 最优；UB=256 256K 最优 | UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
+| 27B Dense: UB 约束 | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4) | F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
 | Thinking 模式 | 所有模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；`reasoning=off` 会导致 checkpoint 恢复 bug（见已知问题）；客户端通过 `chat_template_kwargs.enable_thinking: false` 在请求层面控制 |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
-| 并发 | 35B 最多 3 个，27B Q8 最多 1 个，27B Q6/Q4 最多 2 个 | 多 slot 已启用；278 parallel=1 给双模型加载留内存余量 |
+| 并发 | 所有模型 parallel=1 | 单用户负载无需并发 slot；27B Dense parallel≥3 触发 Vulkan bug |
 | 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
 
@@ -389,11 +388,11 @@ Router Mode 从 `$HOME/model/` 提供所有模型服务。单模型模式（`--m
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | 主力 |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | 主力 |
 
-> **别名命名规则：** APEX 主模型使用 `35b` 表示平衡，`35q` 表示辅助（I-Quality）。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可在 API 请求中使用。注意：Hermes 使用 `aux` 作为 I-Quality 模型的别名，而非 `35q`。
+> **别名命名规则：** APEX 主模型使用 `35b` 表示平衡，`35q` 表示辅助（I-Quality）。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可在 API 请求中使用。
 >
 > **部署模式：**
-> - **Hermes**（双模型常驻）：`models-max 2` → 278 + aux 共存常驻，无 LRU 淘汰，不加 `--sleep-idle-seconds`。278 使用 `parallel = 1` 为 aux 留内存余量。
-> - **QClaw**（单模型 LRU）：`models-max 1` → 一次加载一个模型，按请求切换（冷加载 8–17 秒）。不加 `--sleep-idle-seconds`。278 使用 `parallel = 2` 充分利用吞吐。
+> - **双模型常驻**：`models-max 2` → 278 + 35q 共存常驻，无 LRU 淘汰，不加 `--sleep-idle-seconds`。所有模型 `parallel = 1`。
+> - **单模型 LRU**：`models-max 1` → 一次加载一个模型，按请求切换（冷加载 8–17 秒）。不加 `--sleep-idle-seconds`。
 
 ### 1. 云端 Nginx 配置
 
@@ -554,7 +553,151 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 > 32 GB swap 为双模型冷加载内存尖峰提供安全余量。在移除 `--sleep-idle-seconds` 且模型常驻的情况下，实际 swap 使用极少（实测 ~17 MB）。
 
-### 模型切换
+### 6. Preset INI（模型级参数）
+
+**文件：** `~/model/router-preset.ini`
+
+```ini
+[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 35q
+
+[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mmproj = /home/$USER/model/mmproj-F16.gguf
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 35b
+
+[Qwen3.6-35B-A3B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 358
+
+[Qwen3.6-27B-UD-Q8_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 278
+
+[Qwen3.6-27B-UD-Q6_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 512
+cache-type-k = q8_0
+cache-type-v = q8_0
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 276
+
+[Qwen3.6-27B-UD-Q4_K_XL]
+n-gpu-layers = 99
+flash-attn = 1
+parallel = 1
+ctx-size = 262144
+batch-size = 4096
+ubatch-size = 1024
+cache-type-k = q8_0
+cache-type-v = q8_0
+spec-type = draft-mtp
+spec-draft-n-max = 3
+mlock = 1
+numa = distribute
+reasoning-budget = 8192
+threads = 8
+alias = 274
+```
+
+**修改模型参数：** 编辑 INI 文件 → `systemctl --user restart llm-router`
+
+### 7. 推理服务（systemd）
+
+**文件：** `~/.config/systemd/user/llm-router.service`（用户级，无需 sudo）
+
+```ini
+[Unit]
+Description=LLM Router Service (llama-server multi-model)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
+    --host 127.0.0.1 --port 12345 \
+    --api-key {your_api_key} \
+    -a Qwen3.6 \
+    --models-dir /home/$USER/model \
+    --models-max 2 \
+    --models-preset /home/$USER/model/router-preset.ini \
+    --timeout 600 \
+    --metrics
+Restart=on-failure
+RestartSec=10
+WorkingDirectory=/home/$USER
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable llm-router
+systemctl --user start llm-router
+loginctl enable-linger   # 注销后保持运行
+```
+
+> 双模型模式：278 + 35q 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。改为 `--models-max 1` 可切换单模型 LRU 模式（一次加载一个模型，冷切换 8–17 秒）。
+
+### 8. 模型切换
 
 客户端在请求中指定 `model` 字段即可自动切换（LRU，冷切换耗时 8–17 秒）。**别名和完整文件名均可**：
 
@@ -607,8 +750,8 @@ providers:
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true
-      "aux":
-        context_length: 65536      # 196608 ÷ 3 = 每 slot 65K
+      "35q":
+        context_length: 262144     # 262144 ÷ 1 = 每 slot 256K
         max_output_tokens: 32768
         supports_vision: true
     request_timeout_seconds: 3600  # API 请求超时
@@ -634,7 +777,7 @@ compression:
 **配置要点：**
 - `provider: "custom:local-llm"` — 走命名 providers 解析路径（`"custom"` direct-alias 会忽略 `extra_body`）
 - `key_env: "LLM_API_KEY"` — 需在 `~/.hermes/.env` 中设置
-- `supports_vision: true` 仅 35B 模型（358/35b 配置了 mmproj）；27B Dense 无视觉能力
+- `supports_vision: true` 仅 35B 模型（358/35b/35q 配置了 mmproj）；27B Dense 无视觉能力
 - `max_tokens: 32768` — 必须 ≥ reasoning-budget (8192) + 预期输出；8192 不够
 - `chat_template_kwargs: enable_thinking: true` — 启用思考模式；省略或设 `false` 关闭
 - `context_length` 是每 slot 上下文（ctx-size ÷ parallel），不是总 ctx-size
@@ -649,135 +792,6 @@ hermes -z '问题' --model 35b           # 指定模型的 oneshot
 
 **TUI 常用命令：** `/model 358` 切换模型、`/skills` 查看技能、`/help` 全部命令、`Ctrl+C` 中断回复、`Ctrl+D` 或 `/exit` 退出。
 
-**推理服务——双模型常驻模式**（`llm-router.service`）：
-```ini
-[Unit]
-Description=LLM Router Service (llama-server multi-model)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
-    --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key} \
-    -a Qwen3.6 \
-    --models-dir /home/$USER/model \
-    --models-max 2 \
-    --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 600 \
-    --metrics
-Restart=on-failure
-RestartSec=10
-WorkingDirectory=/home/$USER
-LimitMEMLOCK=infinity
-
-[Install]
-WantedBy=default.target
-```
-> 双模型模式：278 + aux 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。
-
-**Preset INI**（`~/model/router-preset.ini`）：
-```ini
-[Qwen3.6-27B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 1
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 512
-cache-type-k = q8_0
-cache-type-v = q8_0
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 278
-
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 358
-
-[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 35b
-
-[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 196608
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = aux
-
-[Qwen3.6-27B-UD-Q6_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2
-ctx-size = 524288
-batch-size = 4096
-ubatch-size = 512
-cache-type-k = q8_0
-cache-type-v = q8_0
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 276
-
-[Qwen3.6-27B-UD-Q4_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2
-ctx-size = 524288
-batch-size = 4096
-ubatch-size = 1024
-cache-type-k = q8_0
-cache-type-v = q8_0
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 274
-```
-
 #### QClaw
 
 QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webchat）。
@@ -787,135 +801,6 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 - 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启
 - `injectNumCtxForOpenAICompat: false`
 - 默认模型：`qclaw/pool-glm-5.1`（云端代理）
-
-**推理服务——单模型 LRU 模式**（`llm-router.service`）：
-```ini
-[Unit]
-Description=LLM Router Service (llama-server multi-model)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
-    --host 127.0.0.1 --port 12345 \
-    --api-key {your_api_key} \
-    -a Qwen3.6 \
-    --models-dir /home/$USER/model \
-    --models-max 1 \
-    --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 600 \
-    --metrics
-Restart=on-failure
-RestartSec=10
-WorkingDirectory=/home/$USER
-LimitMEMLOCK=infinity
-
-[Install]
-WantedBy=default.target
-```
-> 单模型 LRU 模式：一次加载一个模型，按请求切换（冷加载 8–17 秒）。不加 `--sleep-idle-seconds`。
-
-**Preset INI**（`~/model/router-preset.ini`）：
-```ini
-[Qwen3.6-27B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2
-ctx-size = 524288
-batch-size = 4096
-ubatch-size = 512
-cache-type-k = q8_0
-cache-type-v = q8_0
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 278
-
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 358
-
-[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-ctx-size = 786432
-batch-size = 4096
-ubatch-size = 512
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 35b
-
-[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-ctx-size = 196608
-batch-size = 4096
-ubatch-size = 512
-threads = 8
-alias = 35q
-
-[Qwen3.6-27B-UD-Q6_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2
-ctx-size = 524288
-batch-size = 4096
-ubatch-size = 512
-cache-type-k = q8_0
-cache-type-v = q8_0
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 276
-
-[Qwen3.6-27B-UD-Q4_K_XL]
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 2
-ctx-size = 524288
-batch-size = 4096
-ubatch-size = 1024
-cache-type-k = q8_0
-cache-type-v = q8_0
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 274
-```
 
 **流式输出：** 微信/QQ/企微: blockStreaming；Telegram/Discord/Slack: 编辑消息式流式
 
@@ -928,9 +813,9 @@ alias = 274
 - [ ] `llm-tunnel.service` 已创建并 **运行中**
 - [ ] 云端 `ss -tlnp | grep 8080` 确认隧道监听
 - [ ] `llm-router.service` 已创建并 **运行中**（仅服务级参数）
-- [ ] `~/model/router-preset.ini` 配置正确（全模型参数 + alias，QClaw 用 35q，Hermes 用 aux）
+- [ ] `~/model/router-preset.ini` 配置正确（全模型参数 + alias：35q/35b/358/278/276/274）
 - [ ] 云端：`curl http://127.0.0.1:8080/v1/models` 返回模型 + aliases
-- [ ] 双模型模式（Hermes）：首次请求后 278 和 aux 均显示 status `loaded`
+- [ ] 双模型模式：首次请求后 278 和 35q 均显示 status `loaded`
 - [ ] 单模型模式（QClaw）：模型通过 LRU 按请求切换（冷加载 8–17 秒）
 - [ ] 服务配置不含 `--sleep-idle-seconds`（防止重载循环导致 OOM）
 - [ ] 外网：`curl https://{your_domain}/health` 返回 `OK`
@@ -1043,11 +928,11 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ### `reasoning=off` 导致 APEX I-Quality checkpoint 恢复灾难性变慢
 
-**状态：** 已修复——从 aux/35q preset 中移除 `reasoning = off` 和 `reasoning-budget = 0`，替换为 `reasoning-budget = 8192`
+**状态：** 已修复——从 35q preset 中移除 `reasoning = off` 和 `reasoning-budget = 0`，替换为 `reasoning-budget = 8192`
 
-**受影响模型：** 仅 35B-A3B APEX I-Quality（别名 `aux`/`35q`）。其他模型（358/35b/278/276/274）不受影响。
+**受影响模型：** 仅 35B-A3B APEX I-Quality（别名 `35q`）。其他模型（358/35b/278/276/274）不受影响。
 
-**现象：** aux 的第一次请求正常（<0.5s），但后续请求耗时 43–75 秒。服务端看似卡死——数十秒无输出，然后以 ~1 t/s 缓慢返回。
+**现象：** 35q 的第一次请求正常（<0.5s），但后续请求耗时 43–75 秒。服务端看似卡死——数十秒无输出，然后以 ~1 t/s 缓慢返回。
 
 **根因：** `reasoning = off` 导致 checkpoint 保存时的 attention mask 与运行时配置不匹配。当 llama-server 尝试恢复 prompt cache checkpoint 时，检测到不一致，回退到慢路径——重新 prefill checkpoint 中的所有 token，而非直接加载 KV cache 快照。
 
@@ -1060,7 +945,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 其他开启 reasoning 的 MoE 模型（358、35b）无 checkpoint 问题。仅 `reasoning=off` + APEX I-Quality 的组合触发此 bug。
 
-**修复：** 从 aux/35q preset section 中移除 `reasoning = off` 和 `reasoning-budget = 0`。使用 `reasoning-budget = 8192`（与其他模型一致）。如不需要 thinking 输出，在 API 请求体中设置 `chat_template_kwargs: { enable_thinking: false }`。
+**修复：** 从 35q preset section 中移除 `reasoning = off` 和 `reasoning-budget = 0`。使用 `reasoning-budget = 8192`（与其他模型一致）。如不需要 thinking 输出，在 API 请求体中设置 `chat_template_kwargs: { enable_thinking: false }`。
 
 **警告：** 不要重新添加 `reasoning = off`。这是发现的第三个 reasoning 相关 bug（前两个：`reasoning-format=none` 导致重复输出，`reasoning=off` 导致 checkpoint 恢复失败）。安全做法是在服务端始终开启 reasoning，在请求层面控制。
 

@@ -227,7 +227,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
 | Unified parallel=1, ctx=262144 | Simplifies config; one model per slot is sufficient for single-user workloads; dual-model via `--models-max 2`; 256K context covers all prompt lengths |
 | Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024) |
-| No `--cache-ram` | Pinned alloc fails on unified memory and is 4.6% slower; default prompt cache is better |
+| `--cache-ram -1` (unlimited) | Default 8192 MiB is insufficient for 128K+ context (prompt cache ≈ 12.4 GB for 131K tokens), causing checkpoint eviction and cascading timeouts. `-1` allows prompt cache to grow as needed; 128 GB RAM is sufficient |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
@@ -253,7 +253,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Thinking mode | All models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
-| No `--cache-ram` | Don't add it | Harmful on unified memory |
+| `--cache-ram -1` | Unlimited; must not use default 8192 | Default 8192 MiB too small for long contexts → cascading timeout (see Known Issues) |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
 ### Parameter Separation Principle
@@ -341,8 +341,10 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880"
 |-----------|-------------------|
 | Inference OS | Ubuntu 26.04 LTS |
 | Cloud OS | Ubuntu 24.04.4 LTS |
-| llama.cpp | b9401 (commit 751ebd17a, Vulkan backend) |
-| Build options | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` (+ BLAS/OpenMP/LTO/NATIVE) |
+| llama.cpp | b9315 (commit 314e72934, Vulkan backend) ⚠️ |
+| Build options | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` |
+
+> ⚠️ **Version locked at b9315.** Commit `6c4cbdc70` ("server: MTP layer kv-cache should respect draft type ctk") in b9318 triggers `vk::DeviceLostError` with MTP + quantized KV cache on Vulkan. Do **not** upgrade past b9315 until upstream fixes this (see Known Issues).
 | Vulkan runtime | 1.4.341 |
 | API protocol | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) |
 
@@ -424,10 +426,10 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Long timeout (LLM inference is slow)
-        proxy_read_timeout 600s;
+        # Long timeout (LLM inference is slow, aligned with llama-server --timeout)
+        proxy_read_timeout 1800s;
         proxy_connect_timeout 60s;
-        proxy_send_timeout 600s;
+        proxy_send_timeout 1800s;
 
         # SSE streaming support
         proxy_set_header Connection '';
@@ -680,7 +682,8 @@ ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --models-dir /home/$USER/model \
     --models-max 2 \
     --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 600 \
+    --timeout 1800 \
+    --cache-ram -1 \
     --metrics
 Restart=on-failure
 RestartSec=10
@@ -698,7 +701,7 @@ systemctl --user start llm-router
 loginctl enable-linger   # survive logout
 ```
 
-> Dual-model mode: 274 + 35b co-resident, no `--sleep-idle-seconds` (prevents OOM from reload cycles). Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
+> Dual-model mode: 274 + 35b co-resident, no `--sleep-idle-seconds` (prevents OOM from reload cycles). `--timeout 1800` covers 128K+ context prefill (~562s for 131K tokens on 278). `--cache-ram -1` prevents prompt cache eviction on long contexts. Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
 
 ### 8. Model Switching
 
@@ -728,7 +731,7 @@ curl https://{your_domain}/v1/chat/completions \
 
 ```yaml
 providers:
-  local-llm:
+  custom:local-llm:                                    # ⚠️ must include "custom:" prefix to match model.provider
     name: "Local LLM (Strix Halo)"
     base_url: "https://{your_domain}/v1"
     key_env: "LLM_API_KEY"
@@ -757,11 +760,11 @@ providers:
         context_length: 262144     # 262144 ÷ 1 = 256K per slot
         max_output_tokens: 32768
         supports_vision: true
-    request_timeout_seconds: 3600  # API request timeout
-    stale_timeout_seconds: 900    # non-stream stale detection
+    request_timeout_seconds: 1800  # API request timeout (aligned with llama-server --timeout)
+    stale_timeout_seconds: 1800   # stream stale detection (must match request_timeout for long contexts)
 
 model:
-  default: "274"
+  default: "278"
   provider: "custom:local-llm"
   base_url: "https://{your_domain}/v1"
   extra_body:
@@ -769,21 +772,93 @@ model:
       enable_thinking: true
 max_tokens: 32768                 # must ≥ reasoning-budget + expected output
 
+agent:
+  gateway_timeout: 1800           # gateway-level timeout (aligned with all other timeouts)
+
 streaming:
   enabled: true                  # gateway bot streaming (editMessage)
 
 compression:
   threshold: 0.80                # trigger compression at 80% context
   target_ratio: 0.30             # keep 30% of threshold as recent tail
+
+auxiliary:                         # all auxiliary tasks routed to 35b (vision-capable, fast)
+  vision:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  web_extract:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  compression:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  skills_hub:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  approval:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  mcp:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  title_generation:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  triage_specifier:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  profile_describer:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
 ```
 
 **Configuration notes:**
 - `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
+- ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
 - `key_env: "LLM_API_KEY"` — set in `~/.hermes/.env`
 - `supports_vision: true` on 35B models only (358/35b/35q have mmproj); 27B Dense has no vision
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
 - `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
+- `stale_timeout_seconds: 1800` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
+- `gateway_timeout: 1800` — gateway-level timeout aligned with all other timeouts
+- `auxiliary` — all 11 tasks routed to 35b (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 600` sufficient for auxiliary tasks
 
 **Usage:**
 ```bash
@@ -800,10 +875,10 @@ hermes -z 'question' --model 35b       # oneshot with specific model
 QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, QQ, webchat).
 
 **Provider config** (`~/.qclaw/openclaw.json`):
-- `myllm` provider → `https://{your_domain}/v1/`, 6 models (358/278/276/274/35q/35b)
-- Per-model: `contextWindow: 262144`, `maxTokens: 32768`, reasoning enabled
-- `injectNumCtxForOpenAICompat: false`
-- Default model: `qclaw/pool-glm-5.1` (cloud proxy)
+- `qclaw` provider → `http://127.0.0.1:19000/proxy/llm` (cloud proxy with model routing)
+- Single model `modelroute`: `contextWindow: 200000`, `maxTokens: 8192`, reasoning enabled
+- Default model: `qclaw/pool-glm-5.1` (cloud proxy, does not directly hit inference server)
+- Channels: `wechat-access` (QQ), `openclaw-weixin` (WeChat local)
 
 **Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
 
@@ -896,7 +971,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Workaround attempted:** `--kv-unified` bypasses crash path #1 but **not** crash path #2 (MTP draft checkpoint). Not viable.
 
-**Current mitigation:** 27B Q8 reduced to `parallel = 1` (single-user scenario, no concurrency needed); 27B Q6/Q4 reduced to `parallel = 2`. This avoids the crash at the cost of reduced concurrent slots.
+**Current mitigation:** All 27B Dense models set to `parallel = 1` (single-user scenario, no concurrency needed). This avoids the crash at the cost of no concurrent slots.
 
 **Upstream tracking:**
 - Issue [#19839](https://github.com/ggml-org/llama.cpp/issues/19839) — original bug report
@@ -917,7 +992,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 1. `--sleep-idle-seconds 600` unloads the 35q model after 10 minutes of inactivity, releasing memory
 2. Next request for 35q triggers a cold reload → model weights read from disk + `mlock` into RAM
 3. During cold reload, both 274 (already loaded) and 35b (loading) coexist in memory
-4. 278 runs with `parallel = 2` (pre-fix config) → large KV cache pre-allocation + prompt cache accumulation
+4. 278 previously ran with `parallel = 2` (now fixed to `parallel = 1`) → large KV cache pre-allocation + prompt cache accumulation
 5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
 
 **Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 274 and 35b are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
@@ -954,4 +1029,100 @@ Other MoE models (358, 35b) with reasoning enabled have no checkpoint issues. On
 
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-06-02*
+### MTP + Quantized KV Cache Causes Vulkan DeviceLost (b9318+)
+
+**Status:** Open — version locked at b9315; awaiting upstream fix
+
+**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). In this deployment: 27B Dense series (278/276/274) with `cache-type-k = q8_0` + `cache-type-v = q8_0`.
+
+**Symptom:** `vk::DeviceLostError` (`vk::Queue::submit: ErrorDeviceLost`) during MTP draft decode, causing llama-server slot process crash. Client sees HTTP 500 / "Failed to read connection".
+
+**Reproduction:**
+```ini
+# router-preset.ini — triggers the crash on b9318+
+[Qwen3.6-27B-UD-Q4_K_XL]
+parallel = 1
+ctx-size = 262144
+cache-type-k = q8_0       # quantized KV
+spec-type = draft-mtp      # MTP enabled
+spec-draft-n-max = 3
+# ...
+```
+
+**Culprit commit:** `6c4cbdc70` — "server: MTP layer kv-cache should respect draft type ctk" (#23646). Adds 4 lines in `tools/server/server-context.cpp` that set `type_k` and `type_v` for MTP context. When MTP context uses quantized KV formats (e.g., `q8_0`), the Vulkan backend triggers `vk::DeviceLostError` at long context lengths.
+
+**Bisection:** b9297 GOOD → b9315 GOOD → b9318 BAD. 6 rounds.
+
+**Stress test results (b9465, 278 model):**
+
+| Config | p32K | p64K | p128K | p256K |
+|--------|------|------|-------|-------|
+| MTP + Q8_0 KV | ✅ | ❌ DeviceLost | ❌ DeviceLost | — |
+| No MTP | — | ✅ | ✅ | ✅ |
+| b9315 + MTP | ✅ | ✅ | ✅ | ✅ (128K tokens verified) |
+
+**Root cause:** MTP draft KV cache with quantized types triggers a Vulkan driver bug in radv/amdgpu. Long-context scenarios (≥64K tokens) with high-frequency GPU submissions cause device context loss. The bug is in the interaction between quantized MTP KV cache and the Vulkan memory management — not in the commit's logic itself, but the commit exposes the latent bug.
+
+**Workaround:** Pin llama.cpp at b9315 (last version before the problematic commit). Do **not** upgrade until upstream addresses the Vulkan + quantized KV cache interaction.
+
+**Upstream tracking:** No issue filed yet. The regression is specific to Vulkan backend + MTP + quantized KV; other backends (CPU/CUDA/Metal) are unaffected.
+
+---
+
+### Default `--cache-ram 8192` Causes Cascading Timeouts on Long Contexts
+
+**Status:** Fixed — `--cache-ram -1` added to service config
+
+**Affected scenario:** Requests with 128K+ token context on 27B Dense models (slow prefill ~12 t/s).
+
+**Symptom:** A single long-context request triggers a cascading failure loop: request times out → client disconnects → new request re-prefills from scratch → times out again. Server appears stuck for minutes.
+
+**Root cause chain:**
+1. Default `--cache-ram` is 8192 MiB (prompt cache RAM budget)
+2. 131K-token context prompt cache ≈ 12.4 GB → exceeds 8 GB limit
+3. llama-server evicts older checkpoints to fit within budget → subsequent requests must re-prefill instead of loading cached KV
+4. 278 model at 131K: prefill ≈ 562s → exceeds old `--timeout 600` → client disconnects
+5. New request finds only a partial checkpoint (sim=0.187) → re-prefills 106K tokens → times out again
+6. Loop repeats 10+ times until the slot process is restarted
+
+**Evidence (from logs):**
+- Checkpoint cache: 12.4 GB needed vs 8 GB allowed → eviction every time
+- MTP acceptance rate dropped to 57.5% (normal >85%) due to KV cache pressure
+- Generation speed dropped to 8.5 t/s (normal 13 t/s)
+- Prefill at 0.37–0.95 t/s during re-prefill loops (vs normal 118–129 t/s for cached restores)
+
+**Fix:**
+- `--cache-ram -1` in `llm-router.service` — unlimited prompt cache (128 GB RAM is sufficient)
+- `--timeout 1800` — covers worst-case 131K prefill on 278 (~562s) with margin
+
+**Warning:** Do **not** remove `--cache-ram -1` or reduce `--timeout` below 1800. The default 8192 MiB cache budget is inadequate for contexts >64K tokens with Q8_0 KV cache.
+
+---
+
+### Hermes Providers Key Mismatch Causes 120s Timeout Fallback
+
+**Status:** Fixed — providers key changed from `local-llm` to `custom:local-llm`
+
+**Affected scenario:** Hermes config where `model.provider = "custom:local-llm"` but `providers` dict key was `local-llm` (missing `custom:` prefix).
+
+**Symptom:** Long-context requests (>120K tokens) consistently fail at ~120s, even though `request_timeout_seconds` is set to 1800. Short requests work fine, making the issue hard to diagnose.
+
+**Root cause chain:**
+1. Hermes calls `get_provider_request_timeout("custom:local-llm", "278")` to look up the timeout
+2. The function searches the `providers` dict by the full key (including `custom:` prefix)
+3. If the key is `local-llm` instead of `custom:local-llm`, lookup returns `None`
+4. `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`
+5. Similarly, `get_provider_stale_timeout()` returns `None` → falls back to `HERMES_STREAM_STALE_TIMEOUT = 180s`
+6. 131K-token prefill takes ~1103s on 278 model → killed at 120s
+
+**Fix:** Change `providers` dict key from `local-llm` to `custom:local-llm` to match `model.provider`. Verify with:
+```python
+get_provider_request_timeout("custom:local-llm", "278")  # should return 1800.0, not None
+get_provider_stale_timeout("custom:local-llm", "278")     # should return 1800.0, not None
+```
+
+**Warning:** The `providers` key **must exactly match** `model.provider`, including the `custom:` prefix. This is not documented in Hermes and easy to overlook.
+
+---
+
+*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-03*

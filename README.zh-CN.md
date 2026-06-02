@@ -227,7 +227,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | Service = 服务级，INI = 模型级 | 层次清晰，改模型参数不碰 service 文件 |
 | 统一 parallel=1, ctx=262144 | 简化配置；单用户负载无需并发 slot；双模型通过 `--models-max 2` 实现；256K 上下文覆盖所有 prompt 长度 |
 | 按量化等级差异化 ub | 量化越高权重越大，VRAM 余量越小，需更小 ub 保证稳定性；最优 UB 因模型而异（256–1024） |
-| 不使用 `--cache-ram` | 统一内存上 pinned alloc 失败且慢 4.6%；默认 prompt cache 更优 |
+| `--cache-ram -1`（无限制） | 默认 8192 MiB 对 128K+ 上下文不足（131K token 的 prompt cache ≈ 12.4 GB），导致 checkpoint 淘汰和级联超时。`-1` 允许 prompt cache 按需增长；128 GB RAM 足够 |
 | `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失（仅主模型） |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）混入思考和回答，产生重复输出。不要添加 |
 | 所有模型: `parallel = 1`，`ctx-size = 262144` | 每 slot 256K 上下文；单用户负载无需并发 slot；`parallel > 1` 浪费 KV cache 内存 |
@@ -253,7 +253,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | Thinking 模式 | 所有模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；`reasoning=off` 会导致 checkpoint 恢复 bug（见已知问题）；客户端通过 `chat_template_kwargs.enable_thinking: false` 在请求层面控制 |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 并发 | 所有模型 parallel=1 | 单用户负载无需并发 slot；27B Dense parallel≥3 触发 Vulkan bug |
-| 禁止 `--cache-ram` | 不要加 | 统一内存上有害 |
+| `--cache-ram -1` | 无限制；禁止使用默认 8192 | 默认 8192 MiB 对长上下文不足 → 级联超时（参见已知问题） |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
 
 ### 参数分离原则
@@ -341,8 +341,10 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880"
 |------|------------|
 | 推理机系统 | Ubuntu 26.04 LTS |
 | 云端系统 | Ubuntu 24.04.4 LTS |
-| llama.cpp | b9401 (commit 751ebd17a, Vulkan 后端) |
-| 编译选项 | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release`（+ BLAS/OpenMP/LTO/NATIVE） |
+| llama.cpp | b9315 (commit 314e72934, Vulkan 后端) ⚠️ |
+| 构建选项 | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` |
+
+> ⚠️ **版本锁定在 b9315。** b9318 中的 commit `6c4cbdc70`（"server: MTP layer kv-cache should respect draft type ctk"）在 MTP + 量化 KV cache + Vulkan 下触发 `vk::DeviceLostError` 崩溃。在上游修复前**不要**升级超过 b9315（参见已知问题）。
 | Vulkan 运行时 | 1.4.341 |
 | API 协议 | OpenAI 兼容 (`/v1/chat/completions`, `/v1/models`) |
 
@@ -424,10 +426,10 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # 长超时（LLM 推理耗时）
-        proxy_read_timeout 600s;
+        # 长超时（LLM 推理耗时，与 llama-server --timeout 对齐）
+        proxy_read_timeout 1800s;
         proxy_connect_timeout 60s;
-        proxy_send_timeout 600s;
+        proxy_send_timeout 1800s;
 
         # SSE 流式响应支持
         proxy_set_header Connection '';
@@ -678,7 +680,8 @@ ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --models-dir /home/$USER/model \
     --models-max 2 \
     --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 600 \
+    --timeout 1800 \
+    --cache-ram -1 \
     --metrics
 Restart=on-failure
 RestartSec=10
@@ -726,7 +729,7 @@ curl https://{your_domain}/v1/chat/completions \
 
 ```yaml
 providers:
-  local-llm:
+  custom:local-llm:                                    # ⚠️ 必须包含 "custom:" 前缀，与 model.provider 匹配
     name: "Local LLM (Strix Halo)"
     base_url: "https://{your_domain}/v1"
     key_env: "LLM_API_KEY"
@@ -755,11 +758,11 @@ providers:
         context_length: 262144     # 262144 ÷ 1 = 每 slot 256K
         max_output_tokens: 32768
         supports_vision: true
-    request_timeout_seconds: 3600  # API 请求超时
-    stale_timeout_seconds: 900    # 非流式停滞检测
+    request_timeout_seconds: 1800  # API 请求超时（与 llama-server --timeout 对齐）
+    stale_timeout_seconds: 1800   # 流式停滞检测（必须与 request_timeout 对齐以支持长上下文）
 
 model:
-  default: "274"
+  default: "278"
   provider: "custom:local-llm"
   base_url: "https://{your_domain}/v1"
   extra_body:
@@ -767,21 +770,93 @@ model:
       enable_thinking: true
 max_tokens: 32768                 # 必须 ≥ reasoning-budget + 预期输出
 
+agent:
+  gateway_timeout: 1800           # Gateway 级超时（与所有其他超时对齐）
+
 streaming:
   enabled: true                  # Gateway Bot 流式输出（editMessage）
 
 compression:
   threshold: 0.80                # 80% 上下文使用率时触发压缩
   target_ratio: 0.30             # 压缩后保留 30% 阈值作为最近上下文
+
+auxiliary:                         # 所有辅助任务路由到 35b（支持视觉、速度快）
+  vision:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  web_extract:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  compression:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  skills_hub:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  approval:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  mcp:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  title_generation:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  triage_specifier:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  profile_describer:
+    provider: custom:local-llm
+    model: 35b
+    timeout: 600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
 ```
 
 **配置要点：**
 - `provider: "custom:local-llm"` — 走命名 providers 解析路径（`"custom"` direct-alias 会忽略 `extra_body`）
+- ⚠️ **providers 键必须包含 `custom:` 前缀** — 即 `custom:local-llm`，而非 `local-llm`。若键名与 `model.provider` 不匹配，Hermes 的 `get_provider_request_timeout()` 返回 `None` → 回退到硬编码 `HERMES_STREAM_READ_TIMEOUT = 120s`，导致长上下文请求必定超时。这是级联超时事故的根因（参见已知问题）
 - `key_env: "LLM_API_KEY"` — 需在 `~/.hermes/.env` 中设置
 - `supports_vision: true` 仅 35B 模型（358/35b/35q 配置了 mmproj）；27B Dense 无视觉能力
 - `max_tokens: 32768` — 必须 ≥ reasoning-budget (8192) + 预期输出；8192 不够
 - `chat_template_kwargs: enable_thinking: true` — 启用思考模式；省略或设 `false` 关闭
 - `context_length` 是每 slot 上下文（ctx-size ÷ parallel），不是总 ctx-size
+- `stale_timeout_seconds: 1800` — 必须与 `request_timeout_seconds` 对齐以支持长上下文 prefill（>1000s）
+- `gateway_timeout: 1800` — Gateway 级超时与所有其他超时对齐
+- `auxiliary` — 11 个辅助任务全部路由到 35b（支持视觉的 APEX I-Balanced）；`enable_thinking: false` 降低延迟；`timeout: 600` 对辅助任务足够
 
 **使用方式：**
 ```bash
@@ -798,10 +873,10 @@ hermes -z '问题' --model 35b           # 指定模型的 oneshot
 QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webchat）。
 
 **Provider 配置**（`~/.qclaw/openclaw.json`）：
-- `myllm` provider → `https://{your_domain}/v1/`，6 个模型（358/278/276/274/35q/35b）
-- 每模型：`contextWindow: 262144`、`maxTokens: 32768`、reasoning 已开启
-- `injectNumCtxForOpenAICompat: false`
-- 默认模型：`qclaw/pool-glm-5.1`（云端代理）
+- `qclaw` provider → `http://127.0.0.1:19000/proxy/llm`（云端代理路由）
+- 单模型 `modelroute`：`contextWindow: 200000`、`maxTokens: 8192`、reasoning 已开启
+- 默认模型：`qclaw/pool-glm-5.1`（云端代理，不直连推理机）
+- 渠道：`wechat-access`（QQ）、`openclaw-weixin`（微信本地）
 
 **流式输出：** 微信/QQ/企微: blockStreaming；Telegram/Discord/Slack: 编辑消息式流式
 
@@ -894,12 +969,12 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **尝试的 workaround：** `--kv-unified` 可绕过崩溃路径 #1，但**无法绕过**崩溃路径 #2（MTP draft checkpoint）。不可行。
 
-**当前缓解措施：** 27B Q8 降为 `parallel = 1`（单用户场景无需并发），27B Q6/Q4 降为 `parallel = 2`。牺牲并发以避免崩溃。
+**当前缓解措施：** 所有 27B Dense 模型统一设为 `parallel = 1`（单用户场景无需并发）。牺牲并发以避免崩溃。
 
 **上游追踪：**
 - Issue [#19839](https://github.com/ggml-org/llama.cpp/issues/19839) — 原始 bug 报告
 - PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453) — 提议修复（在 assert 前增加 NULL 检查，委托给 backend `get_tensor`）；已关闭但未合入
-- 截至版本 b9401（commit `751ebd17a`），`ggml-backend.cpp` 中全部 11 处断言均未修改
+- 截至版本 b9315（commit `314e72934`），`ggml-backend.cpp` 中全部 11 处断言均未修改
 
 ---
 
@@ -915,7 +990,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 1. `--sleep-idle-seconds 600` 在 35q 空闲 10 分钟后卸载，释放内存
 2. 下次请求 35q 触发冷重载 → 模型权重从磁盘读入 + `mlock` 锁定到 RAM
 3. 冷重载期间，274（已加载）和 35b（加载中）共存于内存
-4. 278 以 `parallel = 2` 运行（修复前配置）→ 大量 KV cache 预分配 + prompt cache 累积
+4. 278 此前以 `parallel = 2` 运行（现已修复为 `parallel = 1`）→ 大量 KV cache 预分配 + prompt cache 累积
 5. 冷重载内存尖峰超过 128 GB RAM + 8 GB swap → OOM Kill
 
 **关键发现：** 不加 `--sleep-idle-seconds`，已加载的模型会保持常驻。由于客户端（Hermes、QClaw）仅请求 274 和 35b，两模型在 `models-max 2` 下会无限期保持加载，LRU 淘汰不会发生。空闲卸载/重载循环才是 OOM 的根因。
@@ -952,4 +1027,100 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ---
 
-*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9401 Vulkan · 2026-06-02*
+### MTP + 量化 KV cache 触发 Vulkan DeviceLost（b9318+）
+
+**状态：** 未解决——版本锁定在 b9315；等待上游修复
+
+**受影响模型：** 所有启用 MTP speculative decoding + 量化 KV cache（`cache-type-k` / `cache-type-v`）的模型。本部署中：27B Dense 系列（278/276/274）使用 `cache-type-k = q8_0` + `cache-type-v = q8_0`。
+
+**现象：** MTP draft decode 期间触发 `vk::DeviceLostError`（`vk::Queue::submit: ErrorDeviceLost`），llama-server slot 进程崩溃。客户端看到 HTTP 500 / "Failed to read connection"。
+
+**复现：**
+```ini
+# router-preset.ini — 在 b9318+ 上触发崩溃
+[Qwen3.6-27B-UD-Q4_K_XL]
+parallel = 1
+ctx-size = 262144
+cache-type-k = q8_0       # 量化 KV
+spec-type = draft-mtp      # 启用 MTP
+spec-draft-n-max = 3
+# ...
+```
+
+**罪魁祸首 commit：** `6c4cbdc70` —— "server: MTP layer kv-cache should respect draft type ctk" (#23646)。在 `tools/server/server-context.cpp` 中新增 4 行，为 MTP context 设置 `type_k` 和 `type_v`。当 MTP context 使用量化 KV 格式（如 `q8_0`）时，Vulkan 后端在长上下文场景触发 `vk::DeviceLostError`。
+
+**二分定位：** b9297 GOOD → b9315 GOOD → b9318 BAD。6 轮二分。
+
+**压测结果（b9465，278 模型）：**
+
+| 配置 | p32K | p64K | p128K | p256K |
+|------|------|------|-------|-------|
+| MTP + Q8_0 KV | ✅ | ❌ DeviceLost | ❌ DeviceLost | — |
+| 无 MTP | — | ✅ | ✅ | ✅ |
+| b9315 + MTP | ✅ | ✅ | ✅ | ✅（128K tokens 验证通过） |
+
+**根因：** MTP draft KV cache 使用量化类型触发了 radv/amdgpu Vulkan 驱动 bug。长上下文场景（≥64K tokens）高频 GPU 提交导致 device context 丢失。bug 位于量化 MTP KV cache 与 Vulkan 内存管理的交互——不在 commit 本身的逻辑，但该 commit 暴露了潜在问题。
+
+**Workaround：** 锁定 llama.cpp 在 b9315（问题 commit 之前的最后一个版本）。在上游修复 Vulkan + 量化 KV cache 交互前**不要**升级。
+
+**上游追踪：** 尚未提交 issue。此回归仅影响 Vulkan 后端 + MTP + 量化 KV；其他后端（CPU/CUDA/Metal）不受影响。
+
+---
+
+### 默认 `--cache-ram 8192` 在长上下文上导致级联超时
+
+**状态：** 已修复——服务配置已添加 `--cache-ram -1`
+
+**受影响场景：** 27B Dense 模型上 128K+ token 长上下文请求（慢速 prefill ~12 t/s）。
+
+**现象：** 单个长上下文请求触发级联故障循环：请求超时 → 客户端断开 → 新请求重新 prefill → 再次超时。服务端陷入死循环数分钟。
+
+**根因链：**
+1. 默认 `--cache-ram` 为 8192 MiB（prompt cache 内存预算）
+2. 131K token 上下文 prompt cache ≈ 12.4 GB → 超出 8 GB 限制
+3. llama-server 淘汰旧 checkpoint 以符合预算 → 后续请求必须重新 prefill 而非加载缓存的 KV
+4. 278 模型 131K: prefill ≈ 562s → 超出旧 `--timeout 600` → 客户端断开
+5. 新请求只找到部分 checkpoint（sim=0.187）→ 重新 prefill 106K tokens → 再次超时
+6. 循环重复 10+ 次直到 slot 进程重启
+
+**证据（来自日志）：**
+- Checkpoint cache: 需要 12.4 GB vs 8 GB 限制 → 每次淘汰
+- MTP 命中率降至 57.5%（正常 >85%）因 KV cache 压力
+- Gen 速度降至 8.5 t/s（正常 13 t/s）
+- 重新 prefill 循环中速度 0.37–0.95 t/s（正常缓存恢复 118–129 t/s）
+
+**修复：**
+- `--cache-ram -1` 写入 `llm-router.service`——无限制 prompt cache（128 GB RAM 足够）
+- `--timeout 1800`——覆盖最坏情况 131K prefill on 278（~562s）并留有余量
+
+**警告：** 不要移除 `--cache-ram -1` 或将 `--timeout` 降至 1800 以下。默认 8192 MiB cache 预算对 Q8_0 KV cache 的 64K+ token 上下文不足。
+
+---
+
+### Hermes Providers 键名不匹配导致 120s 超时回退
+
+**状态：** 已修复——providers 键从 `local-llm` 改为 `custom:local-llm`
+
+**受影响场景：** Hermes 配置中 `model.provider = "custom:local-llm"` 但 `providers` 字典键为 `local-llm`（缺少 `custom:` 前缀）。
+
+**现象：** 长上下文请求（>120K tokens）始终在 ~120s 失败，即使 `request_timeout_seconds` 已设为 1800。短请求正常，导致问题难以定位。
+
+**根因链：**
+1. Hermes 调用 `get_provider_request_timeout("custom:local-llm", "278")` 查找超时
+2. 函数按完整键名（含 `custom:` 前缀）搜索 `providers` 字典
+3. 若键名为 `local-llm` 而非 `custom:local-llm`，查找返回 `None`
+4. `None` → 回退到硬编码 `HERMES_STREAM_READ_TIMEOUT = 120s`
+5. 同理 `get_provider_stale_timeout()` 返回 `None` → 回退到 `HERMES_STREAM_STALE_TIMEOUT = 180s`
+6. 278 模型 131K prefill 耗时 ~1103s → 在 120s 被杀死
+
+**修复：** 将 `providers` 字典键从 `local-llm` 改为 `custom:local-llm` 以匹配 `model.provider`。验证方法：
+```python
+get_provider_request_timeout("custom:local-llm", "278")  # 应返回 1800.0，而非 None
+get_provider_stale_timeout("custom:local-llm", "278")     # 应返回 1800.0，而非 None
+```
+
+**警告：** `providers` 键**必须与** `model.provider` **完全一致**，包括 `custom:` 前缀。Hermes 文档未提及此约束，容易忽略。
+
+---
+
+*测试环境：FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · 更新于 2026-06-03*

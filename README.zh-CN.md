@@ -44,7 +44,7 @@
 
 ### 35B-A3B MoE APEX I-Quality (别名 `35q`, ~22 GB)
 
-APEX 量化——针对 MoE 的自适应精度策略。混合精度 per tensor（关键层 Q6_K/Q8_0，中间 expert 层 Q4_K_M）。整体 ~22 GB（按体积介于 Q4~Q5，但质量接近 Q8）。imatrix 多样化校准。**比 UD-Q8+MTP 快 48%，体积仅 59%。** 现已改造为**辅助模型**（`35q`）：紧凑上下文（每 slot 64K），保留 mmproj 支持视觉任务。Reasoning 默认开启（`reasoning-budget = 8192`）；客户端可通过 `chat_template_kwargs.enable_thinking: false` 在请求层面关闭 thinking。
+APEX 量化——针对 MoE 的自适应精度策略。混合精度 per tensor（关键层 Q6_K/Q8_0，中间 expert 层 Q4_K_M）。整体 ~22 GB（按体积介于 Q4~Q5，但质量接近 Q8）。imatrix 多样化校准。**比 UD-Q8+MTP 快 48%，体积仅 59%。** 辅助模型，保留 mmproj 支持视觉任务。Reasoning 默认开启（`reasoning-budget = 8192`）；客户端可通过 `chat_template_kwargs.enable_thinking: false` 在请求层面关闭 thinking。
 
 **最优配置：F16 KV cache。** 与 35B UD-Q8 规律一致：≤128K → UB=512（prefill +15~23%）；256K → UB=256（prefill 比 UB=512 慢 4%）。
 
@@ -231,7 +231,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失（仅主模型） |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）混入思考和回答，产生重复输出。不要添加 |
 | 所有模型: `parallel = 1`，`ctx-size = 262144` | 每 slot 256K 上下文；单用户负载无需并发 slot；`parallel > 1` 浪费 KV cache 内存 |
-| 服务：`--models-max 2` | 允许两个模型共存常驻（如 278 + 35q）；设为 1 可切换单模型 LRU 模式 |
+| 服务：`--models-max 2` | 允许两个模型共存常驻（如 274 + 35b）；设为 1 可切换单模型 LRU 模式 |
 | 27B Dense: `parallel = 1` | `parallel ≥ 3` 在 27B Dense 上触发 Vulkan bug（见已知问题） |
 | `--spec-draft-n-max 3` | 4 比 3 慢 20.6% |
 | 全部模型 `-t 8` | 全 GPU 卸载下 t=8 vs t=16 无实质差异，t=8 更低温 |
@@ -384,14 +384,14 @@ Router Mode 从 `$HOME/model/` 提供所有模型服务。单模型模式（`--m
 | **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~24 GB | 3B | 主力（质量） |
 | **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | 主力（最快） |
 | **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX 混合精度 | **MoE** | ~22 GB | 3B | 辅助（视觉，快速） |
-| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | 主力（默认） |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | 主力 |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | 主力 |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | 主力 |
 
 > **别名命名规则：** APEX 主模型使用 `35b` 表示平衡，`35q` 表示辅助（I-Quality）。UD 模型使用 3 位数字 = 模型大小 + 量化等级（如 `358` = 35B Q8，`276` = 27B Q6）。别名和完整文件名均可在 API 请求中使用。
 >
 > **部署模式：**
-> - **双模型常驻**：`models-max 2` → 278 + 35q 共存常驻，无 LRU 淘汰，不加 `--sleep-idle-seconds`。所有模型 `parallel = 1`。
+> - **双模型常驻**：`models-max 2` → 274 + 35b 共存常驻，无 LRU 淘汰，不加 `--sleep-idle-seconds`。所有模型 `parallel = 1`。
 > - **单模型 LRU**：`models-max 1` → 一次加载一个模型，按请求切换（冷加载 8–17 秒）。不加 `--sleep-idle-seconds`。
 
 ### 1. 云端 Nginx 配置
@@ -696,7 +696,7 @@ systemctl --user start llm-router
 loginctl enable-linger   # 注销后保持运行
 ```
 
-> 双模型模式：278 + 35q 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。改为 `--models-max 1` 可切换单模型 LRU 模式（一次加载一个模型，冷切换 8–17 秒）。
+> 双模型模式：274 + 35b 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。改为 `--models-max 1` 可切换单模型 LRU 模式（一次加载一个模型，冷切换 8–17 秒）。
 
 ### 8. 模型切换
 
@@ -759,7 +759,7 @@ providers:
     stale_timeout_seconds: 900    # 非流式停滞检测
 
 model:
-  default: "278"
+  default: "274"
   provider: "custom:local-llm"
   base_url: "https://{your_domain}/v1"
   extra_body:
@@ -816,11 +816,11 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 - [ ] `llm-router.service` 已创建并 **运行中**（仅服务级参数）
 - [ ] `~/model/router-preset.ini` 配置正确（全模型参数 + alias：35q/35b/358/278/276/274）
 - [ ] 云端：`curl http://127.0.0.1:8080/v1/models` 返回模型 + aliases
-- [ ] 双模型模式：首次请求后 278 和 35q 均显示 status `loaded`
+- [ ] 双模型模式：首次请求后 274 和 35b 均显示 status `loaded`
 - [ ] 单模型模式（QClaw）：模型通过 LRU 按请求切换（冷加载 8–17 秒）
 - [ ] 服务配置不含 `--sleep-idle-seconds`（防止重载循环导致 OOM）
 - [ ] 外网：`curl https://{your_domain}/health` 返回 `OK`
-- [ ] 别名路由：`curl -d '{"model":"278",...}'` 和 `curl -d '{"model":"35q",...}'` 均可正常响应
+- [ ] 别名路由：`curl -d '{"model":"274",...}'` 和 `curl -d '{"model":"35b",...}'` 均可正常响应
 
 **快速冒烟测试：**
 ```bash
@@ -914,18 +914,18 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 **根因链条：**
 1. `--sleep-idle-seconds 600` 在 35q 空闲 10 分钟后卸载，释放内存
 2. 下次请求 35q 触发冷重载 → 模型权重从磁盘读入 + `mlock` 锁定到 RAM
-3. 冷重载期间，278（已加载）和 35q（加载中）共存于内存
+3. 冷重载期间，274（已加载）和 35b（加载中）共存于内存
 4. 278 以 `parallel = 2` 运行（修复前配置）→ 大量 KV cache 预分配 + prompt cache 累积
 5. 冷重载内存尖峰超过 128 GB RAM + 8 GB swap → OOM Kill
 
-**关键发现：** 不加 `--sleep-idle-seconds`，已加载的模型会保持常驻。由于客户端（Hermes、QClaw）仅请求 278 和 35q，两模型在 `models-max 2` 下会无限期保持加载，LRU 淘汰不会发生。空闲卸载/重载循环才是 OOM 的根因。
+**关键发现：** 不加 `--sleep-idle-seconds`，已加载的模型会保持常驻。由于客户端（Hermes、QClaw）仅请求 274 和 35b，两模型在 `models-max 2` 下会无限期保持加载，LRU 淘汰不会发生。空闲卸载/重载循环才是 OOM 的根因。
 
 **解决方案：**
 - 从服务配置中移除 `--sleep-idle-seconds`
-- 278 降为 `parallel = 1`、`ctx-size = 262144`，给 35q 留内存余量
+- 274 降为 `parallel = 1`、`ctx-size = 262144`，给 35b 留内存余量
 - 内存余量：80.6 GB 已用 / 131 GB 总计，~44 GB 可用，swap ~17 MB
 
-**警告：** 不要重新添加 `--sleep-idle-seconds`。如果请求了第三种模型（如 358），LRU 淘汰会卸载其中一个已加载模型——这是预期行为。如果必须保证 278 和 35q 同时在线，确保客户端不请求第三种模型。
+**警告：** 不要重新添加 `--sleep-idle-seconds`。如果请求了第三种模型（如 358），LRU 淘汰会卸载其中一个已加载模型——这是预期行为。如果必须保证 274 和 35b 同时在线，确保客户端不请求第三种模型。
 
 ### `reasoning=off` 导致 APEX I-Quality checkpoint 恢复灾难性变慢
 

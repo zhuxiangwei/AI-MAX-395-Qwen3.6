@@ -44,7 +44,7 @@ All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Ra
 
 ### 35B-A3B MoE APEX I-Quality (alias `35q`, ~22 GB)
 
-APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Now repurposed as the **auxiliary model**: compact context (64K per slot), with mmproj for vision tasks. Reasoning is enabled by default (`reasoning-budget = 8192`); clients can disable thinking per-request via `chat_template_kwargs.enable_thinking: false`.
+APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Auxiliary model with mmproj for vision tasks. Reasoning is enabled by default (`reasoning-budget = 8192`); clients can disable thinking per-request via `chat_template_kwargs.enable_thinking: false`.
 
 **Optimal config: F16 KV cache.** Same pattern as 35B UD-Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
 
@@ -231,7 +231,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
-| Service: `--models-max 2` | Allows two models co-resident (e.g., 278 + 35q); set to 1 for single-model LRU mode |
+| Service: `--models-max 2` | Allows two models co-resident (e.g., 274 + 35b); set to 1 for single-model LRU mode |
 | 27B Dense: `parallel = 1` only | `parallel ≥ 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
@@ -384,14 +384,14 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 | **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Main (quality) |
 | **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Main (fastest) |
 | **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Auxiliary (vision, fast) |
-| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Main (default) |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Main |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Main |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Main |
 
 > **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
 >
 > **Deployment modes:**
-> - **Dual-model resident**: `models-max 2` → 278 + 35q co-resident, no LRU eviction, no `--sleep-idle-seconds`. All models `parallel = 1`.
+> - **Dual-model resident**: `models-max 2` → 274 + 35b co-resident, no LRU eviction, no `--sleep-idle-seconds`. All models `parallel = 1`.
 > - **Single-model LRU**: `models-max 1` → one model at a time, switching on request (8–17s cold load). No `--sleep-idle-seconds`.
 
 ### 1. Cloud Nginx Configuration
@@ -698,7 +698,7 @@ systemctl --user start llm-router
 loginctl enable-linger   # survive logout
 ```
 
-> Dual-model mode: 278 + 35q co-resident, no `--sleep-idle-seconds` (prevents OOM from reload cycles). Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
+> Dual-model mode: 274 + 35b co-resident, no `--sleep-idle-seconds` (prevents OOM from reload cycles). Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
 
 ### 8. Model Switching
 
@@ -761,7 +761,7 @@ providers:
     stale_timeout_seconds: 900    # non-stream stale detection
 
 model:
-  default: "278"
+  default: "274"
   provider: "custom:local-llm"
   base_url: "https://{your_domain}/v1"
   extra_body:
@@ -818,11 +818,11 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] `llm-router.service` created and **active** (server-level params only)
 - [ ] `~/model/router-preset.ini` configured with all-model params + aliases (35q/35b/358/278/276/274)
 - [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
-- [ ] Dual-model mode: both 278 and 35q show status `loaded` after first request
+- [ ] Dual-model mode: both 274 and 35b show status `loaded` after first request
 - [ ] Single-model mode (QClaw): model switches via LRU on client request (8–17s cold load)
 - [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
-- [ ] Alias routing: `curl -d '{"model":"278",...}'` and `curl -d '{"model":"35q",...}'` both work
+- [ ] Alias routing: `curl -d '{"model":"274",...}'` and `curl -d '{"model":"35b",...}'` both work
 
 **Quick smoke test:**
 ```bash
@@ -916,15 +916,15 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 **Root cause chain:**
 1. `--sleep-idle-seconds 600` unloads the 35q model after 10 minutes of inactivity, releasing memory
 2. Next request for 35q triggers a cold reload → model weights read from disk + `mlock` into RAM
-3. During cold reload, both 278 (already loaded) and 35q (loading) coexist in memory
+3. During cold reload, both 274 (already loaded) and 35b (loading) coexist in memory
 4. 278 runs with `parallel = 2` (pre-fix config) → large KV cache pre-allocation + prompt cache accumulation
 5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
 
-**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 278 and 35q are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
+**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 274 and 35b are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
 
 **Resolution:**
 - Removed `--sleep-idle-seconds` from service config
-- Reduced 278 to `parallel = 1`, `ctx-size = 262144` to leave memory headroom for 35q
+- Reduced 274 to `parallel = 1`, `ctx-size = 262144` to leave memory headroom for 35b
 - Memory headroom: 80.6 GB used / 131 GB total, ~44 GB available, swap ~17 MB
 
 **Warning:** Do **not** re-add `--sleep-idle-seconds`. If a third model is requested (e.g., 358), LRU eviction will unload one of the two loaded models. This is expected behavior — the freed slot will be used for the requested model. If both 278 and 35q must remain loaded, ensure no client requests a third model, or use a dedicated directory with only 2 models.

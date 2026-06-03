@@ -8,7 +8,7 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 
 ## Performance Benchmarks
 
-All benchmarks measured on FEVM faex1 (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9299 Vulkan). Speeds via API `timings` (server-side, excludes network). Gen speed includes thinking tokens.
+All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9299 Vulkan). Speeds via API `timings` (server-side, excludes network). Gen speed includes thinking tokens.
 
 ### 35B-A3B MoE (UD-Q8_K_XL, alias `358`)
 
@@ -301,7 +301,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 
 | Component | Specification |
 |-----------|--------------|
-| Machine | FEVM faex1 mini PC |
+| Machine | {your_machine} mini PC |
 | APU | AMD Ryzen AI Max+ 395 (16C, SMT disabled) |
 | Memory | 128 GB LPDDR5X (256-bit, unified memory) |
 | Storage | 1 TB NVMe SSD |
@@ -422,8 +422,8 @@ server {
     client_max_body_size 10m;
 
     # SSL
-    ssl_certificate /root/cert.nginx/{your_domain}.pem;
-    ssl_certificate_key /root/cert.nginx/{your_domain}.key;
+    ssl_certificate /etc/ssl/{your_domain}/{your_domain}.pem;
+    ssl_certificate_key /etc/ssl/{your_domain}/{your_domain}.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
@@ -540,7 +540,7 @@ curl http://127.0.0.1:8080/v1/models
 
 **SSH key setup (passwordless):**
 ```bash
-ssh-keygen -t ed25519 -C "llm-tunnel@faex1"
+ssh-keygen -t ed25519 -C "llm-tunnel@{your_hostname}"
 ssh-copy-id {your_server_user}@{your_server_ip}
 ```
 
@@ -1140,4 +1140,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 1800.0
 
 ---
 
-*Tested on FEVM faex1 · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-03*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-03*

@@ -426,10 +426,10 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # 长超时（LLM 推理耗时，与 llama-server --timeout 对齐）
-        proxy_read_timeout 1800s;
+        # 长超时（LLM 推理耗时；Nginx ≥ 下游 llama-server --timeout 1800）
+        proxy_read_timeout 3600s;
         proxy_connect_timeout 60s;
-        proxy_send_timeout 1800s;
+        proxy_send_timeout 3600s;
 
         # SSE 流式响应支持
         proxy_set_header Connection '';
@@ -450,20 +450,7 @@ server {
 
 **应用：** `sudo nginx -t && sudo systemctl reload nginx`
 
-### 2. 云端 SSL 配置
-
-**文件：** `/etc/nginx/snippets/snakeoil.conf`
-
-```nginx
-ssl_certificate /root/cert.nginx/{your_domain}.pem;
-ssl_certificate_key /root/cert.nginx/{your_domain}.key;
-
-ssl_protocols TLSv1.2 TLSv1.3;
-ssl_ciphers HIGH:!aNULL:!MD5;
-ssl_prefer_server_ciphers on;
-```
-
-### 3. 云端 SSH 服务端
+### 2. 云端 SSH 服务端
 
 **文件：** `/etc/ssh/sshd_config`
 
@@ -485,7 +472,7 @@ PubkeyAuthentication yes
 
 **验证：** `sudo sshd -T | grep -E "allowtcpforwarding|clientaliveinterval|passwordauthentication|pubkeyauthentication"`
 
-### 4. SSH 反向隧道（systemd）
+### 3. SSH 反向隧道（systemd）
 
 **文件：** `~/.config/systemd/user/llm-tunnel.service`（用户级，无需 sudo）
 
@@ -537,7 +524,7 @@ ssh-keygen -t ed25519 -C "llm-tunnel@faex1"
 ssh-copy-id {your_server_user}@{your_server_ip}
 ```
 
-### 5. Swap 配置（Ubuntu）
+### 4. Swap 配置（Ubuntu）
 
 ```bash
 # 查看当前 swap
@@ -555,7 +542,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 > 32 GB swap 为双模型冷加载内存尖峰提供安全余量。在移除 `--sleep-idle-seconds` 且模型常驻的情况下，实际 swap 使用极少（实测 ~17 MB）。
 
-### 6. Preset INI（模型级参数）
+### 5. Preset INI（模型级参数）
 
 **文件：** `~/model/router-preset.ini`
 
@@ -662,7 +649,7 @@ alias = 274
 
 **修改模型参数：** 编辑 INI 文件 → `systemctl --user restart llm-router`
 
-### 7. 推理服务（systemd）
+### 6. 推理服务（systemd）
 
 **文件：** `~/.config/systemd/user/llm-router.service`（用户级，无需 sudo）
 
@@ -701,7 +688,7 @@ loginctl enable-linger   # 注销后保持运行
 
 > 双模型模式：274 + 35b 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。改为 `--models-max 1` 可切换单模型 LRU 模式（一次加载一个模型，冷切换 8–17 秒）。
 
-### 8. 模型切换
+### 7. 模型切换
 
 客户端在请求中指定 `model` 字段即可自动切换（LRU，冷切换耗时 8–17 秒）。**别名和完整文件名均可**：
 
@@ -732,7 +719,7 @@ providers:
   custom:local-llm:                                    # ⚠️ 必须包含 "custom:" 前缀，与 model.provider 匹配
     name: "Local LLM (Strix Halo)"
     base_url: "https://{your_domain}/v1"
-    key_env: "LLM_API_KEY"
+    key_env: "DASHENZHIYAN_API_KEY"
     extra_body:
       chat_template_kwargs:
         enable_thinking: true       # 启用思考模式
@@ -777,8 +764,10 @@ streaming:
   enabled: true                  # Gateway Bot 流式输出（editMessage）
 
 compression:
+  enabled: true
   threshold: 0.80                # 80% 上下文使用率时触发压缩
   target_ratio: 0.30             # 压缩后保留 30% 阈值作为最近上下文
+  protect_last_n: 20             # 永不压缩最近 20 条消息
 
 auxiliary:                         # 所有辅助任务路由到 35b（支持视觉、速度快）
   vision:
@@ -837,26 +826,32 @@ auxiliary:                         # 所有辅助任务路由到 35b（支持视
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
-  profile_describer:
+  kanban_decomposer:                # 使用 auto provider → 回退到默认模型 278
+    provider: auto
+    timeout: 600
+    profile_describer:
     provider: custom:local-llm
     model: 35b
     timeout: 600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
+  curator:                          # 使用 auto provider → 回退到默认模型 278
+    provider: auto
+    timeout: 600
 ```
 
 **配置要点：**
 - `provider: "custom:local-llm"` — 走命名 providers 解析路径（`"custom"` direct-alias 会忽略 `extra_body`）
 - ⚠️ **providers 键必须包含 `custom:` 前缀** — 即 `custom:local-llm`，而非 `local-llm`。若键名与 `model.provider` 不匹配，Hermes 的 `get_provider_request_timeout()` 返回 `None` → 回退到硬编码 `HERMES_STREAM_READ_TIMEOUT = 120s`，导致长上下文请求必定超时。这是级联超时事故的根因（参见已知问题）
-- `key_env: "LLM_API_KEY"` — 需在 `~/.hermes/.env` 中设置
+- `key_env: "DASHENZHIYAN_API_KEY"` — 需在 `~/.hermes/.env` 中设置
 - `supports_vision: true` 仅 35B 模型（358/35b/35q 配置了 mmproj）；27B Dense 无视觉能力
 - `max_tokens: 32768` — 必须 ≥ reasoning-budget (8192) + 预期输出；8192 不够
 - `chat_template_kwargs: enable_thinking: true` — 启用思考模式；省略或设 `false` 关闭
 - `context_length` 是每 slot 上下文（ctx-size ÷ parallel），不是总 ctx-size
 - `stale_timeout_seconds: 1800` — 必须与 `request_timeout_seconds` 对齐以支持长上下文 prefill（>1000s）
 - `gateway_timeout: 1800` — Gateway 级超时与所有其他超时对齐
-- `auxiliary` — 11 个辅助任务全部路由到 35b（支持视觉的 APEX I-Balanced）；`enable_thinking: false` 降低延迟；`timeout: 600` 对辅助任务足够
+- `auxiliary` — 11 个辅助任务：9 个路由到 35b（`provider: custom:local-llm`），2 个回退到默认模型 278（`provider: auto`：kanban_decomposer、curator）；`enable_thinking: false` 降低延迟；`timeout: 600` 对辅助任务足够
 
 **使用方式：**
 ```bash
@@ -895,7 +890,7 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 - [ ] 单模型模式（QClaw）：模型通过 LRU 按请求切换（冷加载 8–17 秒）
 - [ ] 服务配置不含 `--sleep-idle-seconds`（防止重载循环导致 OOM）
 - [ ] 外网：`curl https://{your_domain}/health` 返回 `OK`
-- [ ] 别名路由：`curl -d '{"model":"274",...}'` 和 `curl -d '{"model":"35b",...}'` 均可正常响应
+- [ ] 别名路由：`curl -d '{"model":"358",...}'` 和 `curl -d '{"model":"35b",...}'` 均可正常响应
 
 **快速冒烟测试：**
 ```bash

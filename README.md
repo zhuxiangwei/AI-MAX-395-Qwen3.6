@@ -231,7 +231,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
-| Service: `--models-max 2` | Allows two models co-resident (e.g., 274 + 35b); set to 1 for single-model LRU mode |
+| Service: `--models-max 2` | Allows two models co-resident (first two requested stay loaded); set to 1 for single-model LRU mode |
 | 27B Dense: `parallel = 1` only | `parallel ≥ 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
@@ -404,14 +404,32 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
+
+    server_name {your_domain};
+    client_max_body_size 10m;
+
+    # HTTP → HTTPS redirect
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
     listen 443 ssl default_server;
     listen [::]:443 ssl default_server;
 
-    include snippets/snakeoil.conf;
+    server_name {your_domain};
+    client_max_body_size 10m;
+
+    # SSL
+    ssl_certificate /root/cert.nginx/{your_domain}.pem;
+    ssl_certificate_key /root/cert.nginx/{your_domain}.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
 
     root /var/www/html;
-    index index.html index.nginx-debian.html;
-    server_name {your_domain};
+    index index.html;
 
     location / {
         try_files $uri $uri/ =404;
@@ -426,10 +444,10 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Long timeout (LLM inference is slow, aligned with llama-server --timeout)
-        proxy_read_timeout 1800s;
+        # Long timeout (LLM inference is slow; Nginx ≥ downstream llama-server --timeout 1800)
+        proxy_read_timeout 3600s;
         proxy_connect_timeout 60s;
-        proxy_send_timeout 1800s;
+        proxy_send_timeout 3600s;
 
         # SSE streaming support
         proxy_set_header Connection '';
@@ -450,20 +468,7 @@ server {
 
 **Apply:** `sudo nginx -t && sudo systemctl reload nginx`
 
-### 2. Cloud SSL Configuration
-
-**File:** `/etc/nginx/snippets/snakeoil.conf`
-
-```nginx
-ssl_certificate /root/cert.nginx/{your_domain}.pem;
-ssl_certificate_key /root/cert.nginx/{your_domain}.key;
-
-ssl_protocols TLSv1.2 TLSv1.3;
-ssl_ciphers HIGH:!aNULL:!MD5;
-ssl_prefer_server_ciphers on;
-```
-
-### 3. Cloud SSH Server
+### 2. Cloud SSH Server
 
 **File:** `/etc/ssh/sshd_config`
 
@@ -485,7 +490,7 @@ PubkeyAuthentication yes
 
 **Verify:** `sudo sshd -T | grep -E "allowtcpforwarding|clientaliveinterval|passwordauthentication|pubkeyauthentication"`
 
-### 4. SSH Reverse Tunnel (systemd)
+### 3. SSH Reverse Tunnel (systemd)
 
 **File:** `~/.config/systemd/user/llm-tunnel.service` (user-level, no sudo needed)
 
@@ -539,7 +544,7 @@ ssh-keygen -t ed25519 -C "llm-tunnel@faex1"
 ssh-copy-id {your_server_user}@{your_server_ip}
 ```
 
-### 5. Swap Configuration (Ubuntu)
+### 4. Swap Configuration (Ubuntu)
 
 ```bash
 # Check current swap
@@ -557,7 +562,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 > 32 GB swap provides safety margin for dual-model cold-load memory spikes. With `--sleep-idle-seconds` removed and models resident, actual swap usage should be minimal (~17 MB observed).
 
-### 6. Preset INI (Per-Model Parameters)
+### 5. Preset INI (Per-Model Parameters)
 
 **File:** `~/model/router-preset.ini`
 
@@ -664,7 +669,7 @@ alias = 274
 
 **To change model parameters:** edit the INI file → `systemctl --user restart llm-router`
 
-### 7. Inference Service (systemd)
+### 6. Inference Service (systemd)
 
 **File:** `~/.config/systemd/user/llm-router.service` (user-level, no sudo needed)
 
@@ -701,9 +706,9 @@ systemctl --user start llm-router
 loginctl enable-linger   # survive logout
 ```
 
-> Dual-model mode: 274 + 35b co-resident, no `--sleep-idle-seconds` (prevents OOM from reload cycles). `--timeout 1800` covers 128K+ context prefill (~562s for 131K tokens on 278). `--cache-ram -1` prevents prompt cache eviction on long contexts. Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
+> Dual-model mode: first two requested models co-resident (no LRU eviction), no `--sleep-idle-seconds` (prevents OOM from reload cycles). `--timeout 1800` covers 128K+ context prefill (~562s for 131K tokens on 278). `--cache-ram -1` prevents prompt cache eviction on long contexts. Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
 
-### 8. Model Switching
+### 7. Model Switching
 
 Clients specify the `model` field in API requests. Both **alias short names** and **full filenames** work. Router switches automatically (LRU, 8–17 seconds cold load):
 
@@ -734,7 +739,7 @@ providers:
   custom:local-llm:                                    # ⚠️ must include "custom:" prefix to match model.provider
     name: "Local LLM (Strix Halo)"
     base_url: "https://{your_domain}/v1"
-    key_env: "LLM_API_KEY"
+    key_env: "DASHENZHIYAN_API_KEY"
     extra_body:
       chat_template_kwargs:
         enable_thinking: true       # enables thinking mode
@@ -779,8 +784,10 @@ streaming:
   enabled: true                  # gateway bot streaming (editMessage)
 
 compression:
+  enabled: true
   threshold: 0.80                # trigger compression at 80% context
   target_ratio: 0.30             # keep 30% of threshold as recent tail
+  protect_last_n: 20             # never compress the most recent 20 messages
 
 auxiliary:                         # all auxiliary tasks routed to 35b (vision-capable, fast)
   vision:
@@ -839,6 +846,9 @@ auxiliary:                         # all auxiliary tasks routed to 35b (vision-c
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
+  kanban_decomposer:                # uses auto provider → falls back to default model 278
+    provider: auto
+    timeout: 600
   profile_describer:
     provider: custom:local-llm
     model: 35b
@@ -846,12 +856,15 @@ auxiliary:                         # all auxiliary tasks routed to 35b (vision-c
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
+  curator:                          # uses auto provider → falls back to default model 278
+    provider: auto
+    timeout: 600
 ```
 
 **Configuration notes:**
 - `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
 - ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
-- `key_env: "LLM_API_KEY"` — set in `~/.hermes/.env`
+- `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
 - `supports_vision: true` on 35B models only (358/35b/35q have mmproj); 27B Dense has no vision
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
@@ -876,9 +889,11 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 
 **Provider config** (`~/.qclaw/openclaw.json`):
 - `qclaw` provider → `http://127.0.0.1:19000/proxy/llm` (cloud proxy with model routing)
-- Single model `modelroute`: `contextWindow: 200000`, `maxTokens: 8192`, reasoning enabled
+- Single model `modelroute`: reasoning enabled, input supports text + image
 - Default model: `qclaw/pool-glm-5.1` (cloud proxy, does not directly hit inference server)
 - Channels: `wechat-access` (QQ), `openclaw-weixin` (WeChat local)
+- Plugins: `lossless-claw`, `browser`, `wechat-access`, `openclaw-weixin`, `qclaw-plugin`, `qclaw-embedding`, `memory-core`
+- Context engine: `lossless-claw` (LCM-based lossless context management)
 
 **Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
 
@@ -893,11 +908,11 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] `llm-router.service` created and **active** (server-level params only)
 - [ ] `~/model/router-preset.ini` configured with all-model params + aliases (35q/35b/358/278/276/274)
 - [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
-- [ ] Dual-model mode: both 274 and 35b show status `loaded` after first request
+- [ ] Dual-model mode: first two requested models show status `loaded`
 - [ ] Single-model mode (QClaw): model switches via LRU on client request (8–17s cold load)
 - [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
-- [ ] Alias routing: `curl -d '{"model":"274",...}'` and `curl -d '{"model":"35b",...}'` both work
+- [ ] Alias routing: `curl -d '{"model":"358",...}'` and `curl -d '{"model":"35b",...}'` both work
 
 **Quick smoke test:**
 ```bash
@@ -976,7 +991,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 **Upstream tracking:**
 - Issue [#19839](https://github.com/ggml-org/llama.cpp/issues/19839) — original bug report
 - PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453) — proposed fix (add NULL check before assert, delegate to backend `get_tensor`); closed but not merged
-- As of b9401 (commit `751ebd17a`), all 11 assert locations remain unchanged in `ggml-backend.cpp`
+- As of b9315 (commit `314e72934`), all 11 assert locations remain unchanged in `ggml-backend.cpp`
 
 ---
 
@@ -991,7 +1006,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 **Root cause chain:**
 1. `--sleep-idle-seconds 600` unloads the 35q model after 10 minutes of inactivity, releasing memory
 2. Next request for 35q triggers a cold reload → model weights read from disk + `mlock` into RAM
-3. During cold reload, both 274 (already loaded) and 35b (loading) coexist in memory
+3. During cold reload, the already-loaded model and the loading model coexist in memory
 4. 278 previously ran with `parallel = 2` (now fixed to `parallel = 1`) → large KV cache pre-allocation + prompt cache accumulation
 5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
 
@@ -999,7 +1014,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Resolution:**
 - Removed `--sleep-idle-seconds` from service config
-- Reduced 274 to `parallel = 1`, `ctx-size = 262144` to leave memory headroom for 35b
+- All models use `parallel = 1`, `ctx-size = 262144` to leave memory headroom for dual-model co-residency
 - Memory headroom: 80.6 GB used / 131 GB total, ~44 GB available, swap ~17 MB
 
 **Warning:** Do **not** re-add `--sleep-idle-seconds`. If a third model is requested (e.g., 358), LRU eviction will unload one of the two loaded models. This is expected behavior — the freed slot will be used for the requested model. If both 278 and 35q must remain loaded, ensure no client requests a third model, or use a dedicated directory with only 2 models.

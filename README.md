@@ -562,7 +562,95 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 > 32 GB swap provides safety margin for dual-model cold-load memory spikes. With `--sleep-idle-seconds` removed and models resident, actual swap usage should be minimal (~17 MB observed).
 
-### 5. Preset INI (Per-Model Parameters)
+### 5. GPU Temperature Monitoring
+
+The FEVM FAEX1 mini PC motherboard (ITE 0x5571 chip) has no upstream Linux `lm-sensors` driver, and the AMD Ryzen AI Max+ 395 `k10temp` module is not recognized on kernel 7.0.0-15. However, GPU temperature is available via the `amdgpu` hwmon subsystem.
+
+**Monitoring script:** `~/scripts/gpu-temp-log.sh`
+
+```bash
+#!/bin/bash
+# GPU temperature logger — reads amdgpu hwmon
+# Runs every 5 minutes via systemd user timer
+
+LOGDIR="$HOME/logs"
+mkdir -p "$LOGDIR"
+
+ts=$(date '+%Y-%m-%d %H:%M:%S')
+
+gpu_temp=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp1_input 2>/dev/null)
+gpu_temp_c=$((gpu_temp / 1000))
+
+gpu_junc=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp2_input 2>/dev/null)
+gpu_junc_c=$((gpu_junc / 1000))
+
+gpu_mem=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp3_input 2>/dev/null)
+gpu_mem_c=$((gpu_mem / 1000))
+
+gpu_busy=$(cat /sys/class/drm/card0/device/gpu_busy_percent 2>/dev/null)
+
+gpu_pwr_uw=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/power1_input 2>/dev/null)
+gpu_pwr_w=$((gpu_pwr_uw / 1000000))
+
+mem_avail=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+mem_total=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+mem_used_gb=$(awk "BEGIN {printf \"%.1f\", ($mem_total - $mem_avail) / 1048576}")
+mem_total_gb=$(awk "BEGIN {printf \"%.1f\", $mem_total / 1048576}")
+
+junc_str="${gpu_junc_c}°C"
+mem_str="${gpu_mem_c}°C"
+[ "$gpu_junc" = "" ] && junc_str="N/A"
+[ "$gpu_mem" = "" ] && mem_str="N/A"
+
+echo "$ts | GPU ${gpu_temp_c}°C (junc ${junc_str}, mem ${mem_str}) | ${gpu_busy}% busy | ${gpu_pwr_w}W | RAM ${mem_used_gb}/${mem_total_gb}GB"
+```
+
+**systemd user timer:** `~/.config/systemd/user/gpu-temp-log.timer`
+
+```ini
+[Unit]
+Description=GPU Temperature Logger Timer
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+```
+
+**systemd user service:** `~/.config/systemd/user/gpu-temp-log.service`
+
+```ini
+[Unit]
+Description=GPU Temperature Logger
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '/home/$USER/scripts/gpu-temp-log.sh >> /home/$USER/logs/gpu-temp.log 2>&1'
+```
+
+**Setup:**
+
+```bash
+mkdir -p ~/scripts ~/logs
+# Save script to ~/scripts/gpu-temp-log.sh
+chmod +x ~/scripts/gpu-temp-log.sh
+# Save service + timer units to ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now gpu-temp-log.timer
+```
+
+**Log format:** `timestamp | GPU temp (junction, memory) | GPU busy % | Power W | RAM used/total GB`
+
+**Sample output:**
+```
+2026-06-03 13:25:28 | GPU 82°C (junc N/A, mem N/A) | 100% busy | 108W | RAM 106.0/124.9GB
+```
+
+> **Note:** Junction and memory temperatures are not available on this APU (temp2_input/temp3_input not exposed by the amdgpu driver). The GPU edge temperature (`temp1_input`) is the primary monitoring metric. Observed range under full inference load: 78–82°C (TjMax 100°C).
+
+### 6. Preset INI (Per-Model Parameters)
 
 **File:** `~/model/router-preset.ini`
 
@@ -669,7 +757,7 @@ alias = 274
 
 **To change model parameters:** edit the INI file → `systemctl --user restart llm-router`
 
-### 6. Inference Service (systemd)
+### 7. Inference Service (systemd)
 
 **File:** `~/.config/systemd/user/llm-router.service` (user-level, no sudo needed)
 
@@ -708,7 +796,7 @@ loginctl enable-linger   # survive logout
 
 > Dual-model mode: first two requested models co-resident (no LRU eviction), no `--sleep-idle-seconds` (prevents OOM from reload cycles). `--timeout 1800` covers 128K+ context prefill (~562s for 131K tokens on 278). `--cache-ram -1` prevents prompt cache eviction on long contexts. Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
 
-### 7. Model Switching
+### 8. Model Switching
 
 Clients specify the `model` field in API requests. Both **alias short names** and **full filenames** work. Router switches automatically (LRU, 8–17 seconds cold load):
 
@@ -912,6 +1000,8 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] Single-model mode (QClaw): model switches via LRU on client request (8–17s cold load)
 - [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
+- [ ] GPU temperature monitoring: `systemctl --user status gpu-temp-log.timer` active
+- [ ] GPU temp log: `cat ~/logs/gpu-temp.log` shows entries every 5 minutes
 - [ ] Alias routing: `curl -d '{"model":"358",...}'` and `curl -d '{"model":"35b",...}'` both work
 
 **Quick smoke test:**

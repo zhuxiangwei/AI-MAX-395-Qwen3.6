@@ -542,7 +542,95 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 > 32 GB swap 为双模型冷加载内存尖峰提供安全余量。在移除 `--sleep-idle-seconds` 且模型常驻的情况下，实际 swap 使用极少（实测 ~17 MB）。
 
-### 5. Preset INI（模型级参数）
+### 5. GPU 温度监控
+
+FEVM FAEX1 迷你主机主板的 ITE 0x5571 芯片无上游 Linux `lm-sensors` 驱动，AMD Ryzen AI Max+ 395 的 `k10temp` 模块在内核 7.0.0-15 上也未被识别。但 GPU 温度可通过 `amdgpu` hwmon 子系统读取。
+
+**监控脚本：** `~/scripts/gpu-temp-log.sh`
+
+```bash
+#!/bin/bash
+# GPU 温度记录脚本 — 读取 amdgpu hwmon
+# 通过 systemd user timer 每 5 分钟执行一次
+
+LOGDIR="$HOME/logs"
+mkdir -p "$LOGDIR"
+
+ts=$(date '+%Y-%m-%d %H:%M:%S')
+
+gpu_temp=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp1_input 2>/dev/null)
+gpu_temp_c=$((gpu_temp / 1000))
+
+gpu_junc=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp2_input 2>/dev/null)
+gpu_junc_c=$((gpu_junc / 1000))
+
+gpu_mem=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp3_input 2>/dev/null)
+gpu_mem_c=$((gpu_mem / 1000))
+
+gpu_busy=$(cat /sys/class/drm/card0/device/gpu_busy_percent 2>/dev/null)
+
+gpu_pwr_uw=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/power1_input 2>/dev/null)
+gpu_pwr_w=$((gpu_pwr_uw / 1000000))
+
+mem_avail=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+mem_total=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+mem_used_gb=$(awk "BEGIN {printf \"%.1f\", ($mem_total - $mem_avail) / 1048576}")
+mem_total_gb=$(awk "BEGIN {printf \"%.1f\", $mem_total / 1048576}")
+
+junc_str="${gpu_junc_c}°C"
+mem_str="${gpu_mem_c}°C"
+[ "$gpu_junc" = "" ] && junc_str="N/A"
+[ "$gpu_mem" = "" ] && mem_str="N/A"
+
+echo "$ts | GPU ${gpu_temp_c}°C (结温 ${junc_str}, 显存 ${mem_str}) | ${gpu_busy}% 占用 | ${gpu_pwr_w}W | 内存 ${mem_used_gb}/${mem_total_gb}GB"
+```
+
+**systemd 用户定时器：** `~/.config/systemd/user/gpu-temp-log.timer`
+
+```ini
+[Unit]
+Description=GPU 温度记录定时器
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+```
+
+**systemd 用户服务：** `~/.config/systemd/user/gpu-temp-log.service`
+
+```ini
+[Unit]
+Description=GPU 温度记录
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '/home/$USER/scripts/gpu-temp-log.sh >> /home/$USER/logs/gpu-temp.log 2>&1'
+```
+
+**部署步骤：**
+
+```bash
+mkdir -p ~/scripts ~/logs
+# 将脚本保存到 ~/scripts/gpu-temp-log.sh
+chmod +x ~/scripts/gpu-temp-log.sh
+# 将 service 和 timer 单元保存到 ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now gpu-temp-log.timer
+```
+
+**日志格式：** `时间戳 | GPU 温度 (结温, 显存温度) | GPU 占用率 | 功耗 | 内存已用/总量`
+
+**示例输出：**
+```
+2026-06-03 13:25:28 | GPU 82°C (结温 N/A, 显存 N/A) | 100% 占用 | 108W | 内存 106.0/124.9GB
+```
+
+> **注意：** 此 APU 无法获取结温和显存温度（amdgpu 驱动未暴露 temp2_input/temp3_input）。GPU 边缘温度（`temp1_input`）是主要监控指标。满载推理下观测范围：78–82°C（TjMax 100°C）。
+
+### 6. Preset INI（模型级参数）
 
 **文件：** `~/model/router-preset.ini`
 
@@ -649,7 +737,7 @@ alias = 274
 
 **修改模型参数：** 编辑 INI 文件 → `systemctl --user restart llm-router`
 
-### 6. 推理服务（systemd）
+### 7. 推理服务（systemd）
 
 **文件：** `~/.config/systemd/user/llm-router.service`（用户级，无需 sudo）
 
@@ -688,7 +776,7 @@ loginctl enable-linger   # 注销后保持运行
 
 > 双模型模式：274 + 35b 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。改为 `--models-max 1` 可切换单模型 LRU 模式（一次加载一个模型，冷切换 8–17 秒）。
 
-### 7. 模型切换
+### 8. 模型切换
 
 客户端在请求中指定 `model` 字段即可自动切换（LRU，冷切换耗时 8–17 秒）。**别名和完整文件名均可**：
 
@@ -890,6 +978,8 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 - [ ] 单模型模式（QClaw）：模型通过 LRU 按请求切换（冷加载 8–17 秒）
 - [ ] 服务配置不含 `--sleep-idle-seconds`（防止重载循环导致 OOM）
 - [ ] 外网：`curl https://{your_domain}/health` 返回 `OK`
+- [ ] GPU 温度监控：`systemctl --user status gpu-temp-log.timer` 处于 active 状态
+- [ ] GPU 温度日志：`cat ~/logs/gpu-temp.log` 每 5 分钟有记录
 - [ ] 别名路由：`curl -d '{"model":"358",...}'` 和 `curl -d '{"model":"35b",...}'` 均可正常响应
 
 **快速冒烟测试：**

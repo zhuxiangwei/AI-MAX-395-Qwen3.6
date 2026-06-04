@@ -227,7 +227,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | Service = 服务级，INI = 模型级 | 层次清晰，改模型参数不碰 service 文件 |
 | 统一 parallel=1, ctx=262144 | 简化配置；单用户负载无需并发 slot；双模型通过 `--models-max 2` 实现；256K 上下文覆盖所有 prompt 长度 |
 | 按量化等级差异化 ub | 量化越高权重越大，VRAM 余量越小，需更小 ub 保证稳定性；最优 UB 因模型而异（256–1024） |
-| `--cache-ram -1`（无限制） | 默认 8192 MiB 对 128K+ 上下文不足（131K token 的 prompt cache ≈ 12.4 GB），导致 checkpoint 淘汰和级联超时。`-1` 允许 prompt cache 按需增长；128 GB RAM 足够 |
+| `--cache-ram` 默认（8192 MiB） | 默认 8 GiB 限制每模型的 prompt cache，防止一模型的 KV cache 在双模型冷加载时挤占另一模型的内存。此前测试过 `-1`（无限制），导致 27B 的 prompt cache 在长上下文会话后吃光空闲内存，阻塞 35B 冷加载 20+ 分钟（见已知问题）。默认 8192 MiB 配合 `cache-reuse` 对典型负载足够 |
 | `--reasoning-budget 8192` | 防止思考 token 耗尽 KV cache/VRAM，无性能损失（仅主模型） |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）混入思考和回答，产生重复输出。不要添加 |
 | 所有模型: `parallel = 1`，`ctx-size = 262144` | 每 slot 256K 上下文；单用户负载无需并发 slot；`parallel > 1` 浪费 KV cache 内存 |
@@ -239,6 +239,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | `-a Qwen3.6` | 设置 API 响应中的 model 字段；客户端需校验 model 字段时必须 |
 | alias 短名路由 | 无需符号链接；别名和文件名均可路由 |
 | 35q: 不使用 `reasoning = off` | `reasoning = off` 导致灾难性的 checkpoint 恢复变慢（43–75s vs <0.1s，见已知问题）。改用 `reasoning-budget = 8192`（默认值）；客户端可在请求层面关闭 thinking |
+| `cache-reuse` = 256（27B）/ 0（35B） | 27B Dense 支持 KV cache shifting 深度 256 以实现跨轮上下文高效复用；35B MoE 带 mmproj **不**支持 cache-reuse —— 必须为 0，否则多模态请求失败（见已知问题） |
 | 不加 `--sleep-idle-seconds` | 两种模式均不加：已加载模型常驻；空闲卸载→重载循环会导致内存尖峰和 OOM（见已知问题） |
 
 ### 使用约束
@@ -253,7 +254,8 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | Thinking 模式 | 所有模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；`reasoning=off` 会导致 checkpoint 恢复 bug（见已知问题）；客户端通过 `chat_template_kwargs.enable_thinking: false` 在请求层面控制 |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 并发 | 所有模型 parallel=1 | 单用户负载无需并发 slot；27B Dense parallel≥3 触发 Vulkan bug |
-| `--cache-ram -1` | 无限制；禁止使用默认 8192 | 默认 8192 MiB 对长上下文不足 → 级联超时（参见已知问题） |
+| `--cache-ram` | 默认 8192 MiB（不在 service 中设置） | `-1` 导致双模型加载时 VRAM 争抢（见已知问题）；默认 8192 MiB 配合 `cache-reuse` 开启已足够 |
+| `cache-reuse` | 256（27B Dense）/ 0（35B MoE） | 27B 支持 KV shifting 高效复用上下文；35B 带 mmproj **不**支持 cache-reuse —— 必须为 0（见已知问题） |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
 
 ### 参数分离原则
@@ -426,7 +428,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # 长超时（LLM 推理耗时；Nginx ≥ 下游 llama-server --timeout 1800）
+        # 长超时（LLM 推理耗时；Nginx ≥ 下游 llama-server --timeout 3600）
         proxy_read_timeout 3600s;
         proxy_connect_timeout 60s;
         proxy_send_timeout 3600s;
@@ -636,6 +638,7 @@ systemctl --user enable --now gpu-temp-log.timer
 
 ```ini
 [Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+cache-reuse = 0
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -652,6 +655,7 @@ threads = 8
 alias = 35q
 
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
+cache-reuse = 0
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -668,6 +672,7 @@ threads = 8
 alias = 35b
 
 [Qwen3.6-35B-A3B-UD-Q8_K_XL]
+cache-reuse = 0
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -684,6 +689,7 @@ threads = 8
 alias = 358
 
 [Qwen3.6-27B-UD-Q8_K_XL]
+cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -701,6 +707,7 @@ threads = 8
 alias = 278
 
 [Qwen3.6-27B-UD-Q6_K_XL]
+cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -718,6 +725,7 @@ threads = 8
 alias = 276
 
 [Qwen3.6-27B-UD-Q4_K_XL]
+cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -755,8 +763,7 @@ ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --models-dir /home/$USER/model \
     --models-max 2 \
     --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 1800 \
-    --cache-ram -1 \
+    --timeout 3600 \
     --metrics
 Restart=on-failure
 RestartSec=10
@@ -774,7 +781,7 @@ systemctl --user start llm-router
 loginctl enable-linger   # 注销后保持运行
 ```
 
-> 双模型模式：274 + 35b 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。改为 `--models-max 1` 可切换单模型 LRU 模式（一次加载一个模型，冷切换 8–17 秒）。
+> 双模型模式：274 + 35b 共存常驻，不加 `--sleep-idle-seconds`（防止重载循环导致 OOM）。`--timeout 3600` 覆盖 278 上 256K prefill 最坏情况（~3022s）并留有余量。`--cache-ram` 保持默认 8192 MiB —— 防止一模型的 prompt cache 在双模型加载时挤占另一模型的内存（见已知问题）。改为 `--models-max 1` 可切换单模型 LRU 模式（一次加载一个模型，冷切换 8–17 秒）。
 
 ### 8. 模型切换
 
@@ -833,8 +840,8 @@ providers:
         context_length: 262144     # 262144 ÷ 1 = 每 slot 256K
         max_output_tokens: 32768
         supports_vision: true
-    request_timeout_seconds: 1800  # API 请求超时（与 llama-server --timeout 对齐）
-    stale_timeout_seconds: 1800   # 流式停滞检测（必须与 request_timeout 对齐以支持长上下文）
+    request_timeout_seconds: 3600  # API 请求超时（与 llama-server --timeout 对齐）
+    stale_timeout_seconds: 3600   # 流式停滞检测（必须与 request_timeout 对齐以支持长上下文）
 
 model:
   default: "278"
@@ -846,7 +853,7 @@ model:
 max_tokens: 32768                 # 必须 ≥ reasoning-budget + 预期输出
 
 agent:
-  gateway_timeout: 1800           # Gateway 级超时（与所有其他超时对齐）
+  gateway_timeout: 3600           # Gateway 级超时（与所有其他超时对齐）
 
 streaming:
   enabled: true                  # Gateway Bot 流式输出（editMessage）
@@ -937,8 +944,8 @@ auxiliary:                         # 所有辅助任务路由到 35b（支持视
 - `max_tokens: 32768` — 必须 ≥ reasoning-budget (8192) + 预期输出；8192 不够
 - `chat_template_kwargs: enable_thinking: true` — 启用思考模式；省略或设 `false` 关闭
 - `context_length` 是每 slot 上下文（ctx-size ÷ parallel），不是总 ctx-size
-- `stale_timeout_seconds: 1800` — 必须与 `request_timeout_seconds` 对齐以支持长上下文 prefill（>1000s）
-- `gateway_timeout: 1800` — Gateway 级超时与所有其他超时对齐
+- `stale_timeout_seconds: 3600` — 必须与 `request_timeout_seconds` 对齐以支持长上下文 prefill（>1000s）
+- `gateway_timeout: 3600` — Gateway 级超时与所有其他超时对齐
 - `auxiliary` — 11 个辅助任务：9 个路由到 35b（`provider: custom:local-llm`），2 个回退到默认模型 278（`provider: auto`：kanban_decomposer、curator）；`enable_thinking: false` 降低延迟；`timeout: 600` 对辅助任务足够
 
 **使用方式：**
@@ -1152,33 +1159,34 @@ spec-draft-n-max = 3
 
 ---
 
-### 默认 `--cache-ram 8192` 在长上下文上导致级联超时
+### `--cache-ram -1` 导致 VRAM 争抢和 35B 冷加载卡死
 
-**状态：** 已修复——服务配置已添加 `--cache-ram -1`
+**状态：** 已修复——从服务配置中移除 `--cache-ram -1`（恢复默认 8192 MiB）
 
-**受影响场景：** 27B Dense 模型上 128K+ token 长上下文请求（慢速 prefill ~12 t/s）。
+**受影响场景：** 双模型常驻模式（`models-max 2`），其中一个模型已加载并在处理长上下文请求。
 
-**现象：** 单个长上下文请求触发级联故障循环：请求超时 → 客户端断开 → 新请求重新 prefill → 再次超时。服务端陷入死循环数分钟。
+**现象：** 27B 模型先运行并累积了大量 prompt cache（131K token 约 12.4 GB）后，后续请求 35B 模型触发冷加载，在 "fitting params to device memory" 阶段卡死 20+ 分钟。服务端疑似冻结。
 
 **根因链：**
-1. 默认 `--cache-ram` 为 8192 MiB（prompt cache 内存预算）
-2. 131K token 上下文 prompt cache ≈ 12.4 GB → 超出 8 GB 限制
-3. llama-server 淘汰旧 checkpoint 以符合预算 → 后续请求必须重新 prefill 而非加载缓存的 KV
-4. 278 模型 131K: prefill ≈ 562s → 超出旧 `--timeout 600` → 客户端断开
-5. 新请求只找到部分 checkpoint（sim=0.187）→ 重新 prefill 106K tokens → 再次超时
-6. 循环重复 10+ 次直到 slot 进程重启
+1. `--cache-ram -1` 允许 27B 的 prompt cache 无限增长（Vulkan 统一内存上最多 ~30 checkpoints × ~400 MB 每个）
+2. 处理长上下文请求后，27B 的 prompt cache 占用 ~12+ GB 内存，剩余空间不足
+3. 请求 35B 时，llama-server 必须在剩余内存中装入 ~22–37 GB 的模型权重
+4. 由于大部分空闲内存已被 27B 的 prompt cache 占用，35B 加载过程在 "fitting params to device memory" 阶段进入紧密的分配重试循环
+5. 此循环可持续 20–30 分钟后才成功或被杀死
 
 **证据（来自日志）：**
-- Checkpoint cache: 需要 12.4 GB vs 8 GB 限制 → 每次淘汰
-- MTP 命中率降至 57.5%（正常 >85%）因 KV cache 压力
-- Gen 速度降至 8.5 t/s（正常 13 t/s）
-- 重新 prefill 循环中速度 0.37–0.95 t/s（正常缓存恢复 118–129 t/s）
+- 35B 冷加载正常情况（两模型均未加载）：~14 秒
+- 35B 冷加载 27B 已占用内存（`--cache-ram -1`）：20–28 分钟
+- 系统内存饱和时：124 GiB 总量中用掉 96+ GiB，buffer/cache 夸大了实际使用量
+- 移除 `-1` 后：双模型加载 ~14 秒完成，swap 从 10 GiB 降至 256 KiB
 
 **修复：**
-- `--cache-ram -1` 写入 `llm-router.service`——无限制 prompt cache（128 GB RAM 足够）
-- `--timeout 1800`——覆盖最坏情况 131K prefill on 278（~562s）并留有余量
+- 从 `llm-router.service` 中移除 `--cache-ram -1` —— 使用 llama.cpp 默认 8192 MiB
+- 限制每模型的 prompt cache 为 8 GiB，确保双模型常驻有足够内存余量
+- 这**不会**导致此前担心的级联超时 —— 早期超时事件的根因是 `--sleep-idle-seconds` + OOM 交互（见 OOM 章节）以及 `--timeout` 过短（600s vs 现在 3600s），而非 `--cache-ram` 过小
+- 配合 `cache-reuse = 256`（27B 模型），KV cache 可在多轮对话中高效复用，8 GiB prompt cache 预算对典型负载足够
 
-**警告：** 不要移除 `--cache-ram -1` 或将 `--timeout` 降至 1800 以下。默认 8192 MiB cache 预算对 Q8_0 KV cache 的 64K+ token 上下文不足。
+**警告：** 在双模型模式下切勿重新设置 `--cache-ram -1`。128 GB 统一内存中两个模型共占用 41–59 GB，一个模型的无限 prompt cache 会在冷加载时挤占另一模型的内存。
 
 ---
 
@@ -1188,7 +1196,7 @@ spec-draft-n-max = 3
 
 **受影响场景：** Hermes 配置中 `model.provider = "custom:local-llm"` 但 `providers` 字典键为 `local-llm`（缺少 `custom:` 前缀）。
 
-**现象：** 长上下文请求（>120K tokens）始终在 ~120s 失败，即使 `request_timeout_seconds` 已设为 1800。短请求正常，导致问题难以定位。
+**现象：** 长上下文请求（>120K tokens）始终在 ~120s 失败，即使 `request_timeout_seconds` 已设为 3600。短请求正常，导致问题难以定位。
 
 **根因链：**
 1. Hermes 调用 `get_provider_request_timeout("custom:local-llm", "278")` 查找超时
@@ -1200,12 +1208,12 @@ spec-draft-n-max = 3
 
 **修复：** 将 `providers` 字典键从 `local-llm` 改为 `custom:local-llm` 以匹配 `model.provider`。验证方法：
 ```python
-get_provider_request_timeout("custom:local-llm", "278")  # 应返回 1800.0，而非 None
-get_provider_stale_timeout("custom:local-llm", "278")     # 应返回 1800.0，而非 None
+get_provider_request_timeout("custom:local-llm", "278")  # 应返回 3600.0，而非 None
+get_provider_stale_timeout("custom:local-llm", "278")     # 应返回 3600.0，而非 None
 ```
 
 **警告：** `providers` 键**必须与** `model.provider` **完全一致**，包括 `custom:` 前缀。Hermes 文档未提及此约束，容易忽略。
 
 ---
 
-*测试环境：{your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · 更新于 2026-06-03*
+*测试环境：{your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · 更新于 2026-06-04*

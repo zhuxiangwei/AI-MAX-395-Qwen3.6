@@ -227,7 +227,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
 | Unified parallel=1, ctx=262144 | Simplifies config; one model per slot is sufficient for single-user workloads; dual-model via `--models-max 2`; 256K context covers all prompt lengths |
 | Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024) |
-| `--cache-ram -1` (unlimited) | Default 8192 MiB is insufficient for 128K+ context (prompt cache ≈ 12.4 GB for 131K tokens), causing checkpoint eviction and cascading timeouts. `-1` allows prompt cache to grow as needed; 128 GB RAM is sufficient |
+| `--cache-ram` default (8192 MiB) | Default 8 GiB limits prompt cache per model, preventing one model's KV cache from starving another during dual-model cold loading. Previously tested with `-1` (unlimited), which allowed the 27B's prompt cache to consume all free memory during long-context sessions, blocking the 35B cold load for 20+ minutes (see Known Issues). Default 8192 MiB provides sufficient prompt cache hit rate for typical user workloads |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
@@ -239,6 +239,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
 | 35q: no `reasoning = off` | `reasoning = off` causes catastrophic checkpoint restore slowdown (43–75s vs <0.1s, see Known Issues). Use `reasoning-budget = 8192` (default) instead; clients disable thinking per-request if needed |
+| `cache-reuse` = 256 (27B) / 0 (35B) | 27B Dense supports KV cache shifting at depth 256 for efficient context reuse across turns; 35B MoE with mmproj does **not** support cache-reuse — must be 0, otherwise multimodal requests fail (see Known Issues) |
 | No `--sleep-idle-seconds` | Both modes: loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
 
 ### Usage Constraints
@@ -253,7 +254,8 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Thinking mode | All models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
-| `--cache-ram -1` | Unlimited; must not use default 8192 | Default 8192 MiB too small for long contexts → cascading timeout (see Known Issues) |
+| `--cache-ram` | Default 8192 MiB (not set in service) | `-1` causes VRAM contention during dual-model loading (see Known Issues); default 8192 MiB is sufficient for typical workloads with `cache-reuse` enabled |
+| `cache-reuse` | 256 (27B Dense) / 0 (35B MoE) | 27B supports KV shifting for efficient context reuse; 35B with mmproj does **not** support cache-reuse — must be 0 (see Known Issues) |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
 ### Parameter Separation Principle
@@ -444,7 +446,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Long timeout (LLM inference is slow; Nginx ≥ downstream llama-server --timeout 1800)
+        # Long timeout (LLM inference is slow; Nginx ≥ downstream llama-server --timeout 3600)
         proxy_read_timeout 3600s;
         proxy_connect_timeout 60s;
         proxy_send_timeout 3600s;
@@ -656,6 +658,7 @@ systemctl --user enable --now gpu-temp-log.timer
 
 ```ini
 [Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
+cache-reuse = 0
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -672,6 +675,7 @@ threads = 8
 alias = 35q
 
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
+cache-reuse = 0
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -688,6 +692,7 @@ threads = 8
 alias = 35b
 
 [Qwen3.6-35B-A3B-UD-Q8_K_XL]
+cache-reuse = 0
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -704,6 +709,7 @@ threads = 8
 alias = 358
 
 [Qwen3.6-27B-UD-Q8_K_XL]
+cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -721,6 +727,7 @@ threads = 8
 alias = 278
 
 [Qwen3.6-27B-UD-Q6_K_XL]
+cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -738,6 +745,7 @@ threads = 8
 alias = 276
 
 [Qwen3.6-27B-UD-Q4_K_XL]
+cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
@@ -775,8 +783,7 @@ ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --models-dir /home/$USER/model \
     --models-max 2 \
     --models-preset /home/$USER/model/router-preset.ini \
-    --timeout 1800 \
-    --cache-ram -1 \
+    --timeout 3600 \
     --metrics
 Restart=on-failure
 RestartSec=10
@@ -794,7 +801,7 @@ systemctl --user start llm-router
 loginctl enable-linger   # survive logout
 ```
 
-> Dual-model mode: first two requested models co-resident (no LRU eviction), no `--sleep-idle-seconds` (prevents OOM from reload cycles). `--timeout 1800` covers 128K+ context prefill (~562s for 131K tokens on 278). `--cache-ram -1` prevents prompt cache eviction on long contexts. Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
+> Dual-model mode: first two requested models co-resident (no LRU eviction), no `--sleep-idle-seconds` (prevents OOM from reload cycles). `--timeout 3600` covers worst-case 256K prefill on 278 (~3022s) with margin. `--cache-ram` left at default 8192 MiB — prevents one model's prompt cache from starving another during dual-model loading (see Known Issues). Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
 
 ### 8. Model Switching
 
@@ -853,8 +860,8 @@ providers:
         context_length: 262144     # 262144 ÷ 1 = 256K per slot
         max_output_tokens: 32768
         supports_vision: true
-    request_timeout_seconds: 1800  # API request timeout (aligned with llama-server --timeout)
-    stale_timeout_seconds: 1800   # stream stale detection (must match request_timeout for long contexts)
+    request_timeout_seconds: 3600  # API request timeout (aligned with llama-server --timeout)
+    stale_timeout_seconds: 3600   # stream stale detection (must match request_timeout for long contexts)
 
 model:
   default: "278"
@@ -866,7 +873,7 @@ model:
 max_tokens: 32768                 # must ≥ reasoning-budget + expected output
 
 agent:
-  gateway_timeout: 1800           # gateway-level timeout (aligned with all other timeouts)
+  gateway_timeout: 3600           # gateway-level timeout (aligned with all other timeouts)
 
 streaming:
   enabled: true                  # gateway bot streaming (editMessage)
@@ -957,8 +964,8 @@ auxiliary:                         # all auxiliary tasks routed to 35b (vision-c
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
 - `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
-- `stale_timeout_seconds: 1800` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
-- `gateway_timeout: 1800` — gateway-level timeout aligned with all other timeouts
+- `stale_timeout_seconds: 3600` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
+- `gateway_timeout: 3600` — gateway-level timeout aligned with all other timeouts
 - `auxiliary` — all 11 tasks routed to 35b (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 600` sufficient for auxiliary tasks
 
 **Usage:**
@@ -1174,33 +1181,34 @@ spec-draft-n-max = 3
 
 ---
 
-### Default `--cache-ram 8192` Causes Cascading Timeouts on Long Contexts
+### `--cache-ram -1` Causes VRAM Contention and 35B Cold-Load Stall
 
-**Status:** Fixed — `--cache-ram -1` added to service config
+**Status:** Fixed — removed `--cache-ram -1` from service config (back to default 8192 MiB)
 
-**Affected scenario:** Requests with 128K+ token context on 27B Dense models (slow prefill ~12 t/s).
+**Affected scenario:** Dual-model resident mode (`models-max 2`) with one model already loaded and serving long-context requests.
 
-**Symptom:** A single long-context request triggers a cascading failure loop: request times out → client disconnects → new request re-prefills from scratch → times out again. Server appears stuck for minutes.
+**Symptom:** When the 27B model runs first and accumulates a large prompt cache (~12.4 GB for 131K tokens), a subsequent request to a 35B model triggers a cold load that stalls for 20+ minutes in the "fitting params to device memory" phase. The server appears frozen.
 
 **Root cause chain:**
-1. Default `--cache-ram` is 8192 MiB (prompt cache RAM budget)
-2. 131K-token context prompt cache ≈ 12.4 GB → exceeds 8 GB limit
-3. llama-server evicts older checkpoints to fit within budget → subsequent requests must re-prefill instead of loading cached KV
-4. 278 model at 131K: prefill ≈ 562s → exceeds old `--timeout 600` → client disconnects
-5. New request finds only a partial checkpoint (sim=0.187) → re-prefills 106K tokens → times out again
-6. Loop repeats 10+ times until the slot process is restarted
+1. `--cache-ram -1` allows the 27B's prompt cache to grow without bound (up to ~30 checkpoints × ~400 MB each on Vulkan unified memory)
+2. After serving long-context requests, the 27B's prompt cache consumes ~12+ GB of memory, leaving insufficient headroom
+3. When the 35B is requested, llama-server must fit its ~22–37 GB model weights into the remaining memory
+4. With most free memory already consumed by the 27B's prompt cache, the 35B loading process enters a tight allocation-retry loop during "fitting params to device memory"
+5. This loop can last 20–30 minutes before eventually succeeding or being killed
 
 **Evidence (from logs):**
-- Checkpoint cache: 12.4 GB needed vs 8 GB allowed → eviction every time
-- MTP acceptance rate dropped to 57.5% (normal >85%) due to KV cache pressure
-- Generation speed dropped to 8.5 t/s (normal 13 t/s)
-- Prefill at 0.37–0.95 t/s during re-prefill loops (vs normal 118–129 t/s for cached restores)
+- 35B cold load during normal conditions (both models not yet loaded): ~14 seconds
+- 35B cold load with 27B already occupying memory via `--cache-ram -1`: 20–28 minutes
+- System memory at saturation: 96+ GiB used out of 124 GiB, with buffer/cache inflating apparent usage
+- After removing `-1`: dual-model loading complete in ~14 seconds, swap usage dropped from 10 GiB to 256 KiB
 
 **Fix:**
-- `--cache-ram -1` in `llm-router.service` — unlimited prompt cache (128 GB RAM is sufficient)
-- `--timeout 1800` — covers worst-case 131K prefill on 278 (~562s) with margin
+- Remove `--cache-ram -1` from `llm-router.service` — use llama.cpp default 8192 MiB
+- Limit prompt cache per model to 8 GiB, ensuring enough headroom for dual-model co-residency
+- This does **not** cause the previously-feared cascading timeouts — the earlier timeout incidents were caused by `--sleep-idle-seconds` + OOM interaction (see OOM section) and `--timeout` being too short (600s vs now 3600s), not by `--cache-ram` being too small
+- With `cache-reuse = 256` on 27B models, KV cache is efficiently reused across turns, so the 8 GiB prompt cache budget is sufficient for typical workloads
 
-**Warning:** Do **not** remove `--cache-ram -1` or reduce `--timeout` below 1800. The default 8192 MiB cache budget is inadequate for contexts >64K tokens with Q8_0 KV cache.
+**Warning:** Do **not** re-add `--cache-ram -1` in dual-model mode. With only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load.
 
 ---
 
@@ -1210,7 +1218,7 @@ spec-draft-n-max = 3
 
 **Affected scenario:** Hermes config where `model.provider = "custom:local-llm"` but `providers` dict key was `local-llm` (missing `custom:` prefix).
 
-**Symptom:** Long-context requests (>120K tokens) consistently fail at ~120s, even though `request_timeout_seconds` is set to 1800. Short requests work fine, making the issue hard to diagnose.
+**Symptom:** Long-context requests (>120K tokens) consistently fail at ~120s, even though `request_timeout_seconds` is set to 3600. Short requests work fine, making the issue hard to diagnose.
 
 **Root cause chain:**
 1. Hermes calls `get_provider_request_timeout("custom:local-llm", "278")` to look up the timeout
@@ -1222,12 +1230,12 @@ spec-draft-n-max = 3
 
 **Fix:** Change `providers` dict key from `local-llm` to `custom:local-llm` to match `model.provider`. Verify with:
 ```python
-get_provider_request_timeout("custom:local-llm", "278")  # should return 1800.0, not None
-get_provider_stale_timeout("custom:local-llm", "278")     # should return 1800.0, not None
+get_provider_request_timeout("custom:local-llm", "278")  # should return 3600.0, not None
+get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0, not None
 ```
 
 **Warning:** The `providers` key **must exactly match** `model.provider`, including the `custom:` prefix. This is not documented in Hermes and easy to overlook.
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-03*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-04*

@@ -23,7 +23,7 @@ import urllib.error
 
 # ── Constants ──────────────────────────────────────────────────
 CHARS_PER_TOKEN = 3.6
-DEFAULT_CTX = 786432  # parallel=3 × 262144 per slot
+DEFAULT_CTX = 262144  # parallel=1 × 262144 per slot
 DEFAULT_BATCH = 4096
 DEFAULT_THREADS = 8
 DEFAULT_REASONING_BUDGET = 8192
@@ -207,7 +207,8 @@ class LlamaServer:
     def __init__(self, model_path, alias, base_dir, api_key="",
                  ubatch=256, cache_type_k="f16", cache_type_v="f16",
                  ctx=DEFAULT_CTX, batch=DEFAULT_BATCH, threads=DEFAULT_THREADS,
-                 port=DEFAULT_SERVER_PORT,
+                 port=DEFAULT_SERVER_PORT, parallel=1,
+                 mmproj_path=None, cache_reuse=None,
                  ready_timeout=DEFAULT_SERVER_READY_TIMEOUT):
         self.model_path = model_path
         self.alias = alias
@@ -220,6 +221,9 @@ class LlamaServer:
         self.batch = batch
         self.threads = threads
         self.port = port
+        self.parallel = parallel
+        self.mmproj_path = mmproj_path
+        self.cache_reuse = cache_reuse
         self.ready_timeout = ready_timeout
         self.pid = None
 
@@ -237,7 +241,7 @@ class LlamaServer:
             "--ubatch-size", str(self.ubatch),
             "--threads", str(self.threads),
             "--flash-attn", "on",
-            "--parallel", "3",
+            "--parallel", str(self.parallel),
             "--spec-type", "draft-mtp",
             "--spec-draft-n-max", "3",
             "--mlock",
@@ -252,6 +256,14 @@ class LlamaServer:
             "--timeout", "3600",
             "--metrics",
         ]
+
+        # Optional: mmproj for vision models
+        if self.mmproj_path:
+            cmd.extend(["--mmproj", self.mmproj_path])
+
+        # Optional: KV cache reuse threshold
+        if self.cache_reuse is not None:
+            cmd.extend(["--cache-reuse", str(self.cache_reuse)])
 
         log_path = os.path.join(self.base_dir, "test/server_bench.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)

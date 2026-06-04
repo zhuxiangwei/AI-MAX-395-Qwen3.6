@@ -42,7 +42,7 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 
 > Gen speed is nearly identical across UB=256/512 (±2 t/s). UB choice mainly affects prefill/TTFT: UB=512 is faster at ≤128K; UB=256 is faster at 256K.
 
-### 35B-A3B MoE APEX I-Quality (alias `35q`, ~22 GB)
+### 35B-A3B MoE APEX I-Quality (alias `35xq`, ~22 GB)
 
 APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Auxiliary model with mmproj for vision tasks. Reasoning is enabled by default (`reasoning-budget = 8192`); clients can disable thinking per-request via `chat_template_kwargs.enable_thinking: false`.
 
@@ -72,7 +72,7 @@ APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per 
 
 > APEX I-Quality gen speed **~48% faster** than UD-Q8 at all prompt sizes (80 vs 54 t/s). File size 21.9 GB vs 37 GB.
 
-### 35B-A3B MoE APEX I-Balanced (alias `35b`, ~24 GB)
+### 35B-A3B MoE APEX I-Balanced (alias `35xb`, ~24 GB)
 
 APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor (critical layers Q6_K/Q5_K_M, middle expert layers Q4_K_M). ~24 GB overall (between Q5 and Q6 by size). KL max 4.53 — **lowest deviation among all quantizations** (even better than Q8's 9.72). imatrix calibration reduces worst-case deviation by 68%.
 
@@ -183,7 +183,7 @@ Dense model, Q4 quantization — fastest generation among Dense models.
 
 8 questions covering math, logic, CS, and philosophy. Scored by keyword matching (max 10 per question, total 80). All models use F16 KV + UB=512 + MTP (`--spec-type draft-mtp --spec-draft-n-max 3`).
 
-| Question | 35q (I-Q) | 35b (I-B) | 358 (Q8) |
+| Question | 35xq (I-Q) | 35xb (I-B) | 358 (Q8) |
 |----------|-----------|-----------|----------|
 | Gaussian sum (1+2+...+100) | 10/10 | 10/10 | 10/10 |
 | Syllogism validity | 0/10 | 4/10 | 4/10 |
@@ -204,14 +204,14 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 
 | Image | Prompt tokens | Model | Gen (t/s) | MTP accept rate | Elapsed |
 |-------|-------------|-------|-----------|----------------|---------|
-| Baby sleeping (83 KB) | 939 | 35q | **73.5** | 55.8% | 16.7s |
-| | | 35b | 69.6 | 52.4% | 14.6s |
+| Baby sleeping (83 KB) | 939 | 35xq | **73.5** | 55.8% | 16.7s |
+| | | 35xb | 69.6 | 52.4% | 14.6s |
 | | | 358 | 51.2 | 50.9% | 18.3s |
-| Outdoor photo (1.4 MB) | 2059 | 35q | **69.8** | 52.3% | 22.3s |
-| | | 35b | 65.4 | 48.4% | 23.4s |
+| Outdoor photo (1.4 MB) | 2059 | 35xq | **69.8** | 52.3% | 22.3s |
+| | | 35xb | 65.4 | 48.4% | 23.4s |
 | | | 358 | 49.3 | 48.2% | 28.4s |
-| Birthday photo (2.8 MB) | 4034 | 35q | 70.5 | 53.9% | 35.2s |
-| | | 35b | **71.1** | 56.6% | 35.2s |
+| Birthday photo (2.8 MB) | 4034 | 35xq | 70.5 | 53.9% | 35.2s |
+| | | 35xb | **71.1** | 56.6% | 35.2s |
 | | | 358 | 53.5 | 55.2% | 39.9s |
 
 > Vision mode MTP accept rate (48–57%) is significantly lower than text mode (60–70%), as visual tokens are harder to predict. APEX I-Quality is ~39% faster than UD-Q8 on vision tasks. All three models accurately describe image contents.
@@ -238,7 +238,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
-| 35q: no `reasoning = off` | `reasoning = off` causes catastrophic checkpoint restore slowdown (43–75s vs <0.1s, see Known Issues). Use `reasoning-budget = 8192` (default) instead; clients disable thinking per-request if needed |
+| 35xq: no `reasoning = off` | `reasoning = off` causes catastrophic checkpoint restore slowdown (43–75s vs <0.1s, see Known Issues). Use `reasoning-budget = 8192` (default) instead; clients disable thinking per-request if needed |
 | `cache-reuse` = 256 (27B) / 0 (35B) | 27B Dense supports KV cache shifting at depth 256 for efficient context reuse across turns; 35B MoE with mmproj does **not** support cache-reuse — must be 0, otherwise multimodal requests fail (see Known Issues) |
 | No `--sleep-idle-seconds` | Both modes: loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
 
@@ -380,29 +380,34 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 | Source | Short | Models | Description |
 |--------|-------|--------|-------------|
 | [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | **UD-35B** | 358 | Unsloth Dynamic quant for 35B MoE |
-| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35b, 35q | APEX adaptive-precision quant for 35B MoE |
+| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35xb, 35xq | APEX adaptive-precision quant for 35B MoE |
 | [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278, 276, 274 | Unsloth Dynamic quant for 27B Dense |
 
 | Alias | File | Source | Quant | Arch | Size | Active Params | Role |
 |-------|------|--------|-------|------|------|---------------|------|
-| **35b** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Main (quality) |
-| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Main (fastest) |
-| **35q** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Auxiliary (vision, fast) |
-| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Main |
-| **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Main |
-| **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Main |
+| **35xb** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Resident (aux+vision) |
+| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Pool (LRU) |
+| **35xq** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Deleted (file removed) |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Resident (default) |
+| **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Deleted (file removed) |
+| **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Deleted (file removed) |
 
-> **Alias naming convention:** APEX models use `35q`/`35b` for quality/balanced. UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
+> **Alias naming convention:** `35b` is reserved for the Qwen3.6-35B-A3B architecture family. APEX variants use `35xq` (I-Quality) and `35xb` (I-Balanced). UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
 >
 > **Deployment modes:**
-> - **Dual-model resident**: `models-max 2` → 274 + 35b co-resident, no LRU eviction, no `--sleep-idle-seconds`. All models `parallel = 1`.
+> - **Dual-model resident**: `models-max 2` → 278 + 35xb co-resident, no LRU eviction, no `--sleep-idle-seconds`. All models `parallel = 1`.
 > - **Single-model LRU**: `models-max 1` → one model at a time, switching on request (8–17s cold load). No `--sleep-idle-seconds`.
+>
+> **Deleted models (2026-06-04):** 35xq (21.9 GB), 276 (25 GB), 274 (17 GB) removed to reclaim ~62.8 GB. Benchmark data and test scripts preserved in git for reference.
 
 ### 1. Cloud Nginx Configuration
 
 **File:** `/etc/nginx/sites-available/default`
 
 ```nginx
+# Rate limiting zone (10 requests/min per IP, burst=5)
+limit_req_zone $binary_remote_addr zone=llm:10m rate=10r/m;
+
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
@@ -439,6 +444,8 @@ server {
 
     # LLM API endpoint (OpenAI-compatible)
     location /v1/ {
+        limit_req zone=llm burst=5 nodelay;   # rate limiting
+
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -672,7 +679,7 @@ mlock = 1
 numa = distribute
 reasoning-budget = 8192
 threads = 8
-alias = 35q
+alias = 35xq
 
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
 cache-reuse = 0
@@ -689,7 +696,7 @@ mlock = 1
 numa = distribute
 reasoning-budget = 8192
 threads = 8
-alias = 35b
+alias = 35xb
 
 [Qwen3.6-35B-A3B-UD-Q8_K_XL]
 cache-reuse = 0
@@ -852,11 +859,11 @@ providers:
       "274":
         context_length: 262144
         max_output_tokens: 32768
-      "35b":
+      "35xb":
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true
-      "35q":
+      "35xq":
         context_length: 262144     # 262144 ÷ 1 = 256K per slot
         max_output_tokens: 32768
         supports_vision: true
@@ -884,96 +891,106 @@ compression:
   target_ratio: 0.30             # keep 30% of threshold as recent tail
   protect_last_n: 20             # never compress the most recent 20 messages
 
-auxiliary:                         # all auxiliary tasks routed to 35b (vision-capable, fast)
+auxiliary:                         # all auxiliary tasks routed to 35xb (vision-capable, fast)
   vision:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    base_url: "https://{your_domain}/v1"   # ⚠️ MUST be explicit — empty string causes RuntimeError (see Known Issues)
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   web_extract:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   compression:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   skills_hub:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   approval:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   mcp:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   title_generation:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   triage_specifier:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   kanban_decomposer:                # uses auto provider → falls back to default model 278
     provider: auto
-    timeout: 600
+    timeout: 1800
   profile_describer:
     provider: custom:local-llm
-    model: 35b
-    timeout: 600
+    model: 35xb
+    timeout: 1800
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   curator:                          # uses auto provider → falls back to default model 278
     provider: auto
-    timeout: 600
+    timeout: 1800
 ```
 
 **Configuration notes:**
 - `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
 - ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
 - `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
-- `supports_vision: true` on 35B models only (358/35b/35q have mmproj); 27B Dense has no vision
+- `supports_vision: true` on 35B models only (358/35xb/35xq have mmproj); 27B Dense has no vision
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
 - `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
 - `stale_timeout_seconds: 3600` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
 - `gateway_timeout: 3600` — gateway-level timeout aligned with all other timeouts
-- `auxiliary` — all 11 tasks routed to 35b (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 600` sufficient for auxiliary tasks
+- `auxiliary` — all 11 tasks routed to 35xb (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 1800` aligned with full-chain timeout
+- `auxiliary.vision.base_url` — ⚠️ **MUST be explicit** set to `https://{your_domain}/v1`. Empty string causes `resolve_vision_provider_client()` to skip the explicit branch, fall through to `_get_cached_client(is_vision=True)` → returns None → RuntimeError. Non-vision auxiliary tasks are safe with empty string (different code path). See Known Issues.
+
+**Environment variable overrides** (`~/.hermes/.env`):
+
+```bash
+# Override Hermes hardcoded defaults — prevent long-context timeout at 120s/180s
+HERMES_STREAM_READ_TIMEOUT=3600
+HERMES_STREAM_STALE_TIMEOUT=7200
+```
 
 **Usage:**
 ```bash
 wsl                                    # enter WSL
 hermes                                 # TUI mode (interactive)
 hermes -z 'quick question'             # oneshot mode
-hermes -z 'question' --model 35b       # oneshot with specific model
+hermes -z 'question' --model 35xb       # oneshot with specific model
 ```
 
 **TUI commands:** `/model 358` switch model, `/skills` list skills, `/help` all commands, `Ctrl+C` interrupt, `Ctrl+D` or `/exit` quit.
@@ -1001,15 +1018,15 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] `llm-tunnel.service` created and **active**
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
-- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (35q/35b/358/278/276/274)
+- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (35xb/358/278; 35xq/276/274 deleted)
 - [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
-- [ ] Dual-model mode: first two requested models show status `loaded`
+- [ ] Dual-model mode: 278 and 35xb both show status `loaded` after first request
 - [ ] Single-model mode (QClaw): model switches via LRU on client request (8–17s cold load)
 - [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
 - [ ] GPU temperature monitoring: `systemctl --user status gpu-temp-log.timer` active
 - [ ] GPU temp log: `cat ~/logs/gpu-temp.log` shows entries every 5 minutes
-- [ ] Alias routing: `curl -d '{"model":"358",...}'` and `curl -d '{"model":"35b",...}'` both work
+- [ ] Alias routing: `curl -d '{"model":"358",...}'`, `curl -d '{"model":"35xb",...}'`, `curl -d '{"model":"278",...}'` all work
 
 **Quick smoke test:**
 ```bash
@@ -1050,7 +1067,7 @@ curl https://{your_domain}/v1/chat/completions \
 
 **Status:** Open — waiting for upstream fix (PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453))
 
-**Affected models:** 27B Dense series (aliases `278`/`276`/`274`). 35B MoE models (aliases `358`/`35b`/`35q`) are **not** affected.
+**Affected models:** 27B Dense series (aliases `278`/`276`/`274`). 35B MoE models (aliases `358`/`35xb`/`35xq`) are **not** affected.
 
 **Symptom:** `llama-server` aborts with `GGML_ASSERT` failure when processing any request on 27B Dense models with `parallel ≥ 3` and MTP enabled.
 
@@ -1096,33 +1113,33 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Resolved — removed `--sleep-idle-seconds` from service config
 
-**Affected scenario:** Main model (27B Q8) + 35q model in dual-model mode (`models-max 2`), with `--sleep-idle-seconds` configured.
+**Affected scenario:** Main model (27B Q8) + 35xq model in dual-model mode (`models-max 2`), with `--sleep-idle-seconds` configured.
 
 **Symptom:** Linux OOM killer terminates `llama-server` after hours of operation.
 
 **Root cause chain:**
-1. `--sleep-idle-seconds 600` unloads the 35q model after 10 minutes of inactivity, releasing memory
-2. Next request for 35q triggers a cold reload → model weights read from disk + `mlock` into RAM
+1. `--sleep-idle-seconds 600` unloads the 35xq model after 10 minutes of inactivity, releasing memory
+2. Next request for 35xq triggers a cold reload → model weights read from disk + `mlock` into RAM
 3. During cold reload, the already-loaded model and the loading model coexist in memory
 4. 278 previously ran with `parallel = 2` (now fixed to `parallel = 1`) → large KV cache pre-allocation + prompt cache accumulation
 5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
 
-**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 274 and 35b are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
+**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 274 and 35xb are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
 
 **Resolution:**
 - Removed `--sleep-idle-seconds` from service config
 - All models use `parallel = 1`, `ctx-size = 262144` to leave memory headroom for dual-model co-residency
 - Memory headroom: 80.6 GB used / 131 GB total, ~44 GB available, swap ~17 MB
 
-**Warning:** Do **not** re-add `--sleep-idle-seconds`. If a third model is requested (e.g., 358), LRU eviction will unload one of the two loaded models. This is expected behavior — the freed slot will be used for the requested model. If both 278 and 35q must remain loaded, ensure no client requests a third model, or use a dedicated directory with only 2 models.
+**Warning:** Do **not** re-add `--sleep-idle-seconds`. If a third model is requested (e.g., 358), LRU eviction will unload one of the two loaded models. This is expected behavior — the freed slot will be used for the requested model. If both 278 and 35xq must remain loaded, ensure no client requests a third model, or use a dedicated directory with only 2 models.
 
 ### `reasoning=off` Causes Catastrophic Checkpoint Restore Slowdown on APEX I-Quality
 
-**Status:** Fixed — removed `reasoning = off` and `reasoning-budget = 0` from 35q preset, replaced with `reasoning-budget = 8192`
+**Status:** Fixed — removed `reasoning = off` and `reasoning-budget = 0` from 35xq preset, replaced with `reasoning-budget = 8192`
 
-**Affected model:** 35B-A3B APEX I-Quality (alias `35q`) only. All other models (358/35b/278/276/274) are unaffected.
+**Affected model:** 35B-A3B APEX I-Quality (alias `35xq`) only. All other models (358/35xb/278/276/274) are unaffected.
 
-**Symptom:** After the first request to 35q, subsequent requests take 43–75 seconds instead of <0.5 seconds. The server appears frozen — no output for tens of seconds, then response arrives at ~1 t/s.
+**Symptom:** After the first request to 35xq, subsequent requests take 43–75 seconds instead of <0.5 seconds. The server appears frozen — no output for tens of seconds, then response arrives at ~1 t/s.
 
 **Root cause:** `reasoning = off` creates an attention mask mismatch between the checkpoint (saved with default reasoning-enabled state) and the model's runtime configuration. When llama-server attempts to restore a prompt cache checkpoint, it detects the mismatch and falls back to a slow path — re-prefilling all tokens from the checkpoint instead of loading the KV cache snapshot directly.
 
@@ -1133,9 +1150,9 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 | `reasoning=off` (broken) | 0.37–0.95 t/s | 43–75s ❌ |
 | `reasoning-budget=8192` (fixed) | 118–129 t/s | <0.1s ✅ |
 
-Other MoE models (358, 35b) with reasoning enabled have no checkpoint issues. Only the combination of `reasoning=off` + APEX I-Quality triggers the bug.
+Other MoE models (358, 35xb) with reasoning enabled have no checkpoint issues. Only the combination of `reasoning=off` + APEX I-Quality triggers the bug.
 
-**Fix:** Remove `reasoning = off` and `reasoning-budget = 0` from the 35q preset section. Use `reasoning-budget = 8192` (same as other models). If thinking output is not desired, disable it per-request via `chat_template_kwargs: { enable_thinking: false }` in the API request body.
+**Fix:** Remove `reasoning = off` and `reasoning-budget = 0` from the 35xq preset section. Use `reasoning-budget = 8192` (same as other models). If thinking output is not desired, disable it per-request via `chat_template_kwargs: { enable_thinking: false }` in the API request body.
 
 **Warning:** Do **not** re-add `reasoning = off` to any model preset. This is the third reasoning-related bug discovered (after `reasoning-format=none` causing duplicate output, and `reasoning=off` causing checkpoint restore failure). The safe approach is to always keep reasoning enabled at the server level and control it per-request.
 
@@ -1209,6 +1226,28 @@ spec-draft-n-max = 3
 - With `cache-reuse = 256` on 27B models, KV cache is efficiently reused across turns, so the 8 GiB prompt cache budget is sufficient for typical workloads
 
 **Warning:** Do **not** re-add `--cache-ram -1` in dual-model mode. With only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load.
+
+---
+
+### Hermes Vision `base_url: ''` Causes RuntimeError
+
+**Status:** Resolved — set `auxiliary.vision.base_url` to `https://{your_domain}/v1`
+
+**Affected scenario:** Hermes config with `auxiliary.vision.base_url` as empty string (`''`).
+
+**Symptom:** Vision requests fail with `RuntimeError: No LLM provider configured for task=vision`.
+
+**Root cause chain:**
+1. `resolve_vision_provider_client()` checks `base_url` first — empty string is falsy → skips explicit branch
+2. `requested="custom:local-llm"` ≠ `"auto"` → skips auto-detection branch
+3. Falls through to `_get_cached_client(is_vision=True)` → `resolve_provider_client()` cannot resolve `custom:*` + `is_vision=True` → returns None
+4. `None` → RuntimeError
+
+**Key insight:** Non-vision auxiliary tasks (web_extract, compression, etc.) work fine with empty `base_url` because their code path uses `_get_cached_client(is_vision=False)`, which correctly resolves named providers. Only the vision path has this extra `base_url` branch.
+
+**Fix:** Explicitly set `auxiliary.vision.base_url` to `https://{your_domain}/v1`. Even though the provider already defines `base_url`, the vision resolution path does not fall back to the provider's `base_url`.
+
+**Warning:** After modifying Hermes config (including `yaml.dump` rewrites), always verify `auxiliary.vision.base_url` is not empty.
 
 ---
 

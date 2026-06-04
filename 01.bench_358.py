@@ -15,6 +15,7 @@ import benchlib
 
 _BASE_DIR = os.environ.get("LLM_BASE_DIR", "/home/user")
 MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf")
+MMPROJ_PATH = os.path.join(_BASE_DIR, "model/mmproj-F16.gguf")
 API_KEY = os.environ.get("LLM_API_KEY", "")
 ALIAS = "358"
 
@@ -76,6 +77,7 @@ def main():
             server = benchlib.LlamaServer(
                 model_path=MODEL_PATH, alias=ALIAS, base_dir=_BASE_DIR,
                 api_key=API_KEY, ubatch=ub, cache_type_k=kv, cache_type_v=kv,
+                mmproj_path=MMPROJ_PATH,
             )
 
             try:

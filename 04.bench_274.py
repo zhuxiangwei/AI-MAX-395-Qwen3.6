@@ -76,6 +76,7 @@ def main():
             server = benchlib.LlamaServer(
                 model_path=MODEL_PATH, alias=ALIAS, base_dir=_BASE_DIR,
                 api_key=API_KEY, ubatch=ub, cache_type_k=kv, cache_type_v=kv,
+                cache_reuse=256,
             )
 
             try:

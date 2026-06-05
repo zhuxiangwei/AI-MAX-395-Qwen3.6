@@ -181,7 +181,7 @@ Dense model, Q4 quantization — fastest generation among Dense models.
 
 ### Intelligence Test (35B MoE, MTP enabled)
 
-8 questions covering math, logic, CS, and philosophy. Scored by keyword matching (max 10 per question, total 80). All models use F16 KV + UB=512 + MTP (`--spec-type draft-mtp --spec-draft-n-max 3`).
+8 questions covering math, logic, CS, and philosophy. Scored by keyword matching (max 10 per question, total 80). All models use F16 KV + UB=512 + MTP (`--spec-type draft-mtp --spec-draft-n-max 2`).
 
 | Question | 35xq (I-Q) | 35xb (I-B) | 358 (Q8) |
 |----------|-----------|-----------|----------|
@@ -233,13 +233,13 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
 | Service: `--models-max 1` | Single-model rotation: one model at a time, LRU switching on request (30–60s cold load), with `--slot-save-path` KV checkpoint save/restore. Dual-model resident (models-max 2) abandoned due to slot contention stalls |
 | 27B Dense: `parallel = 1` only | `parallel ≥ 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
-| `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
+| `--spec-draft-n-max 2` | 3 is 20.6% slower than 2; 2 provides best speed/accuracy tradeoff with quantized KV cache |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
 | 35xq: no `reasoning = off` | `reasoning = off` causes catastrophic checkpoint restore slowdown (43–75s vs <0.1s, see Known Issues). Use `reasoning-budget = 8192` (default) instead; clients disable thinking per-request if needed |
-| `cache-reuse` = 256 (27B) / 0 (35B) | 27B Dense supports KV cache shifting at depth 256 for efficient context reuse across turns; 35B MoE with mmproj does **not** support cache-reuse — must be 0, otherwise multimodal requests fail (see Known Issues) |
+| `cache-reuse` = 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; previously 35B MoE was set to 0 due to mmproj concerns, but LCP-based slot selection works correctly with cache-reuse=256 |
 | No `--sleep-idle-seconds` | Both modes: loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
 
 ### Usage Constraints
@@ -255,7 +255,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
 | `--cache-ram` | `-1` (unlimited, set in service) | Single-model rotation: `-1` maximizes KV cache hit rate; dual-model mode must use default 8192 MiB to prevent contention (see Known Issues) |
-| `cache-reuse` | 256 (27B Dense) / 0 (35B MoE) | 27B supports KV shifting for efficient context reuse; 35B with mmproj does **not** support cache-reuse — must be 0 (see Known Issues) |
+| `cache-reuse` | 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; LCP-based slot selection works with all models |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
 ### Parameter Separation Principle
@@ -329,11 +329,12 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 **File:** `/etc/default/grub`
 
 ```bash
-GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880"
+GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880 processor.max_cstate=1"
 ```
 
 - `amd_iommu=off` — disables IOMMU, reduces memory translation overhead for GPU DMA
 - `amdgpu.gttsize=122880` — sets GPU-accessible system memory (GTT) to 120 GB, allowing the iGPU to access nearly all 128 GB RAM for model weights
+- `processor.max_cstate=1` — prevents CPU from entering deep C-states, reducing latency for Vulkan GPU command submission and KV cache operations
 
 **Apply:** `sudo update-grub && sudo reboot`
 
@@ -664,15 +665,15 @@ systemctl --user enable --now gpu-temp-log.timer
 ```ini
 
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
-cache-reuse = 0
+cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 512
+ubatch-size = 1024
 spec-type = draft-mtp
-spec-draft-n-max = 3
+spec-draft-n-max = 2
 mmproj = /home/zxw/mmproj/mmproj-F16.gguf
 mlock = 1
 numa = distribute
@@ -681,15 +682,15 @@ threads = 8
 alias = 35xb
 
 [Qwen3.6-35B-A3B-UD-Q8_K_XL]
-cache-reuse = 0
+cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 512
+ubatch-size = 1024
 spec-type = draft-mtp
-spec-draft-n-max = 3
+spec-draft-n-max = 2
 mmproj = /home/zxw/mmproj/mmproj-F16.gguf
 mlock = 1
 numa = distribute
@@ -704,11 +705,11 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 512
-cache-type-k = q8_0
-cache-type-v = q8_0
+ubatch-size = 1024
+cache-type-k = q4_0
+cache-type-v = q4_0
 spec-type = draft-mtp
-spec-draft-n-max = 3
+spec-draft-n-max = 2
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
@@ -1217,4 +1218,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-04*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-06*

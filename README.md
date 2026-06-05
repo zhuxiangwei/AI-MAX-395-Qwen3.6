@@ -227,11 +227,11 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
 | Unified parallel=1, ctx=262144 | Simplifies config; one model per slot is sufficient for single-user workloads; dual-model via `--models-max 2`; 256K context covers all prompt lengths |
 | Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024) |
-| `--cache-ram` default (8192 MiB) | Default 8 GiB limits prompt cache per model, preventing one model's KV cache from starving another during dual-model cold loading. Previously tested with `-1` (unlimited), which allowed the 27B's prompt cache to consume all free memory during long-context sessions, blocking the 35B cold load for 20+ minutes (see Known Issues). Default 8192 MiB provides sufficient prompt cache hit rate for typical user workloads |
+| `--cache-ram -1` (unlimited) | Single-model rotation mode: only one model in memory at a time, `-1` allows prompt cache to grow without bound, maximizing KV cache hit rate. Previously dual-model resident mode used default 8192 MiB to prevent one model from starving another (see Known Issues) |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
-| Service: `--models-max 2` | Allows two models co-resident (first two requested stay loaded); set to 1 for single-model LRU mode |
+| Service: `--models-max 1` | Single-model rotation: one model at a time, LRU switching on request (30–60s cold load), with `--slot-save-path` KV checkpoint save/restore. Dual-model resident (models-max 2) abandoned due to slot contention stalls |
 | 27B Dense: `parallel = 1` only | `parallel ≥ 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 3` | 4 is 20.6% slower than 3 |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
@@ -254,7 +254,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Thinking mode | All models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
-| `--cache-ram` | Default 8192 MiB (not set in service) | `-1` causes VRAM contention during dual-model loading (see Known Issues); default 8192 MiB is sufficient for typical workloads with `cache-reuse` enabled |
+| `--cache-ram` | `-1` (unlimited, set in service) | Single-model rotation: `-1` maximizes KV cache hit rate; dual-model mode must use default 8192 MiB to prevent contention (see Known Issues) |
 | `cache-reuse` | 256 (27B Dense) / 0 (35B MoE) | 27B supports KV shifting for efficient context reuse; 35B with mmproj does **not** support cache-reuse — must be 0 (see Known Issues) |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
@@ -297,7 +297,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 - SSH reverse tunnel provides NAT traversal (home network → cloud)
 - OpenAI-compatible API endpoint at `https://{your_domain}/v1/`
 - **Router Mode** with per-model preset INI — automatic LRU model switching
-- **Alias short names** (358/278/276/274) for convenient model selection
+- **Alias short names** (358/278/35xb) for convenient model selection
 
 ### Hardware
 
@@ -395,8 +395,7 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 > **Alias naming convention:** `35b` is reserved for the Qwen3.6-35B-A3B architecture family. APEX variants use `35xq` (I-Quality) and `35xb` (I-Balanced). UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
 >
 > **Deployment modes:**
-> - **Dual-model resident**: `models-max 2` → 278 + 35xb co-resident, no LRU eviction, no `--sleep-idle-seconds`. All models `parallel = 1`.
-> - **Single-model LRU**: `models-max 1` → one model at a time, switching on request (8–17s cold load). No `--sleep-idle-seconds`.
+> - **Single-model rotation**: `models-max 1` → one model at a time, LRU switching on request (30–60s cold load), with `--slot-save-path` KV checkpoint save/restore. GTT 120GB + mlock=1 + cache-ram=-1 maximizes KV cache hit rate. No `--sleep-idle-seconds`.
 >
 > **Deleted models (2026-06-04):** 35xq (21.9 GB), 276 (25 GB), 274 (17 GB) removed to reclaim ~62.8 GB. Benchmark data and test scripts preserved in git for reference.
 
@@ -406,7 +405,7 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 
 ```nginx
 # Rate limiting zone (10 requests/min per IP, burst=5)
-limit_req_zone $binary_remote_addr zone=llm:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=api:10m rate=10r/m;
 
 server {
     listen 80 default_server;
@@ -444,7 +443,7 @@ server {
 
     # LLM API endpoint (OpenAI-compatible)
     location /v1/ {
-        limit_req zone=llm burst=5 nodelay;   # rate limiting
+        limit_req zone=api burst=5 nodelay;   # rate limiting
 
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
@@ -460,7 +459,6 @@ server {
 
         # SSE streaming support
         proxy_set_header Connection '';
-        chunked_transfer_encoding off;
         proxy_buffering off;
         proxy_cache off;
         gzip off;              # must disable gzip for SSE streaming
@@ -664,22 +662,6 @@ systemctl --user enable --now gpu-temp-log.timer
 **File:** `~/model/router-preset.ini`
 
 ```ini
-[Qwen3.6-35B-A3B-APEX-MTP-I-Quality]
-cache-reuse = 0
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 1
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 512
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 35xq
 
 [Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
 cache-reuse = 0
@@ -691,7 +673,7 @@ batch-size = 4096
 ubatch-size = 512
 spec-type = draft-mtp
 spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
+mmproj = /home/zxw/mmproj/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
@@ -708,7 +690,7 @@ batch-size = 4096
 ubatch-size = 512
 spec-type = draft-mtp
 spec-draft-n-max = 3
-mmproj = /home/$USER/model/mmproj-F16.gguf
+mmproj = /home/zxw/mmproj/mmproj-F16.gguf
 mlock = 1
 numa = distribute
 reasoning-budget = 8192
@@ -733,41 +715,7 @@ reasoning-budget = 8192
 threads = 8
 alias = 278
 
-[Qwen3.6-27B-UD-Q6_K_XL]
-cache-reuse = 256
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 1
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 512
-cache-type-k = q8_0
-cache-type-v = q8_0
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 276
 
-[Qwen3.6-27B-UD-Q4_K_XL]
-cache-reuse = 256
-n-gpu-layers = 99
-flash-attn = 1
-parallel = 1
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 1024
-cache-type-k = q8_0
-cache-type-v = q8_0
-spec-type = draft-mtp
-spec-draft-n-max = 3
-mlock = 1
-numa = distribute
-reasoning-budget = 8192
-threads = 8
-alias = 274
 ```
 
 **To change model parameters:** edit the INI file → `systemctl --user restart llm-router`
@@ -778,7 +726,7 @@ alias = 274
 
 ```ini
 [Unit]
-Description=LLM Router Service (llama-server multi-model)
+Description=LLM Router Service (llama-server single-model rotation)
 After=network.target
 
 [Service]
@@ -788,8 +736,10 @@ ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --api-key {your_api_key} \
     -a Qwen3.6 \
     --models-dir /home/$USER/model \
-    --models-max 2 \
+    --models-max 1 \
     --models-preset /home/$USER/model/router-preset.ini \
+    --slot-save-path /home/$USER/kv-checkpoints \
+    --cache-ram -1 \
     --timeout 3600 \
     --metrics
 Restart=on-failure
@@ -808,7 +758,7 @@ systemctl --user start llm-router
 loginctl enable-linger   # survive logout
 ```
 
-> Dual-model mode: first two requested models co-resident (no LRU eviction), no `--sleep-idle-seconds` (prevents OOM from reload cycles). `--timeout 3600` covers worst-case 256K prefill on 278 (~3022s) with margin. `--cache-ram` left at default 8192 MiB — prevents one model's prompt cache from starving another during dual-model loading (see Known Issues). Change `--models-max` to 1 for single-model LRU mode (one model at a time, 8–17s cold load on switch).
+> Single-model rotation: `--models-max 1` + `--slot-save-path` KV checkpoint save/restore + `--cache-ram -1` unlimited prompt cache. Model switch latency 30–60s (cold load + slot restore). `--timeout 3600` covers worst-case 256K prefill on 278 (~3022s) with margin. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights.
 
 ### 8. Model Switching
 
@@ -853,18 +803,8 @@ providers:
       "278":
         context_length: 262144
         max_output_tokens: 32768
-      "276":
-        context_length: 262144
-        max_output_tokens: 32768
-      "274":
-        context_length: 262144
-        max_output_tokens: 32768
       "35xb":
         context_length: 262144
-        max_output_tokens: 32768
-        supports_vision: true
-      "35xq":
-        context_length: 262144     # 262144 ÷ 1 = 256K per slot
         max_output_tokens: 32768
         supports_vision: true
     request_timeout_seconds: 3600  # API request timeout (aligned with llama-server --timeout)
@@ -896,85 +836,85 @@ auxiliary:                         # all auxiliary tasks routed to 35xb (vision-
     provider: custom:local-llm
     model: 35xb
     base_url: "https://{your_domain}/v1"   # ⚠️ MUST be explicit — empty string causes RuntimeError (see Known Issues)
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   web_extract:
     provider: custom:local-llm
     model: 35xb
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   compression:
     provider: custom:local-llm
     model: 35xb
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   skills_hub:
     provider: custom:local-llm
     model: 35xb
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   approval:
     provider: custom:local-llm
     model: 35xb
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   mcp:
     provider: custom:local-llm
     model: 35xb
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   title_generation:
     provider: custom:local-llm
     model: 35xb
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   triage_specifier:
     provider: custom:local-llm
     model: 35xb
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   kanban_decomposer:                # uses auto provider → falls back to default model 278
     provider: auto
-    timeout: 1800
+    timeout: 3600
   profile_describer:
     provider: custom:local-llm
     model: 35xb
-    timeout: 1800
+    timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   curator:                          # uses auto provider → falls back to default model 278
     provider: auto
-    timeout: 1800
+    timeout: 3600
 ```
 
 **Configuration notes:**
 - `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
 - ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
 - `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
-- `supports_vision: true` on 35B models only (358/35xb/35xq have mmproj); 27B Dense has no vision
+- `supports_vision: true` on 35B models only (358/35xb have mmproj); 27B Dense has no vision
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
 - `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
 - `stale_timeout_seconds: 3600` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
 - `gateway_timeout: 3600` — gateway-level timeout aligned with all other timeouts
-- `auxiliary` — all 11 tasks routed to 35xb (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 1800` aligned with full-chain timeout
+- `auxiliary` — all 11 tasks routed to 35xb (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout
 - `auxiliary.vision.base_url` — ⚠️ **MUST be explicit** set to `https://{your_domain}/v1`. Empty string causes `resolve_vision_provider_client()` to skip the explicit branch, fall through to `_get_cached_client(is_vision=True)` → returns None → RuntimeError. Non-vision auxiliary tasks are safe with empty string (different code path). See Known Issues.
 
 **Environment variable overrides** (`~/.hermes/.env`):
@@ -1018,7 +958,7 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] `llm-tunnel.service` created and **active**
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
-- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (35xb/358/278; 35xq/276/274 deleted)
+- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (278/35xb/358; 35xq/276/274 deleted)
 - [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
 - [ ] Dual-model mode: 278 and 35xb both show status `loaded` after first request
 - [ ] Single-model mode (QClaw): model switches via LRU on client request (8–17s cold load)
@@ -1113,7 +1053,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Resolved — removed `--sleep-idle-seconds` from service config
 
-**Affected scenario:** Main model (27B Q8) + 35xq model in dual-model mode (`models-max 2`), with `--sleep-idle-seconds` configured.
+**Affected scenario:** Main model (27B Q8) + 35xq model in dual-model resident mode (`models-max 2`), with `--sleep-idle-seconds` configured. **This scenario is obsolete — current deployment uses single-model rotation (models-max 1).**
 
 **Symptom:** Linux OOM killer terminates `llama-server` after hours of operation.
 
@@ -1137,7 +1077,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Fixed — removed `reasoning = off` and `reasoning-budget = 0` from 35xq preset, replaced with `reasoning-budget = 8192`
 
-**Affected model:** 35B-A3B APEX I-Quality (alias `35xq`) only. All other models (358/35xb/278/276/274) are unaffected.
+**Affected model:** 35B-A3B APEX I-Quality (alias `35xq`, deleted) only. All other models (358/35xb/278) are unaffected.
 
 **Symptom:** After the first request to 35xq, subsequent requests take 43–75 seconds instead of <0.5 seconds. The server appears frozen — no output for tens of seconds, then response arrives at ~1 t/s.
 
@@ -1162,7 +1102,7 @@ Other MoE models (358, 35xb) with reasoning enabled have no checkpoint issues. O
 
 **Status:** Open — version locked at b9315; awaiting upstream fix
 
-**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). In this deployment: 27B Dense series (278/276/274) with `cache-type-k = q8_0` + `cache-type-v = q8_0`.
+**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). In this deployment: 27B Dense (278, with `cache-type-k = q8_0` + `cache-type-v = q8_0`; 276/274 deleted, same config).
 
 **Symptom:** `vk::DeviceLostError` (`vk::Queue::submit: ErrorDeviceLost`) during MTP draft decode, causing llama-server slot process crash. Client sees HTTP 500 / "Failed to read connection".
 
@@ -1200,9 +1140,9 @@ spec-draft-n-max = 3
 
 ### `--cache-ram -1` Causes VRAM Contention and 35B Cold-Load Stall
 
-**Status:** Fixed — removed `--cache-ram -1` from service config (back to default 8192 MiB)
+**Status:** Fixed — switched to single-model rotation mode (`models-max 1`), `--cache-ram -1` re-enabled
 
-**Affected scenario:** Dual-model resident mode (`models-max 2`) with one model already loaded and serving long-context requests.
+**Affected scenario:** Dual-model resident mode (`models-max 2`) with one model already loaded and serving long-context requests. **This scenario is obsolete — current deployment uses single-model rotation (models-max 1).**
 
 **Symptom:** When the 27B model runs first and accumulates a large prompt cache (~12.4 GB for 131K tokens), a subsequent request to a 35B model triggers a cold load that stalls for 20+ minutes in the "fitting params to device memory" phase. The server appears frozen.
 
@@ -1220,12 +1160,12 @@ spec-draft-n-max = 3
 - After removing `-1`: dual-model loading complete in ~14 seconds, swap usage dropped from 10 GiB to 256 KiB
 
 **Fix:**
-- Remove `--cache-ram -1` from `llm-router.service` — use llama.cpp default 8192 MiB
-- Limit prompt cache per model to 8 GiB, ensuring enough headroom for dual-model co-residency
-- This does **not** cause the previously-feared cascading timeouts — the earlier timeout incidents were caused by `--sleep-idle-seconds` + OOM interaction (see OOM section) and `--timeout` being too short (600s vs now 3600s), not by `--cache-ram` being too small
-- With `cache-reuse = 256` on 27B models, KV cache is efficiently reused across turns, so the 8 GiB prompt cache budget is sufficient for typical workloads
+- Switch to single-model rotation mode (`--models-max 1`), only one model in memory at a time, `--cache-ram -1` no longer causes VRAM contention
+- Combined with `--slot-save-path` KV checkpoint save/restore, model switch latency is 30–60 seconds
+- GTT 120GB + mlock=1 ensures model weights stay in physical memory
+- **Do not** use `--cache-ram -1` in dual-model resident mode (`models-max 2`)
 
-**Warning:** Do **not** re-add `--cache-ram -1` in dual-model mode. With only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load.
+**Warning:** `--cache-ram -1` is only safe in single-model rotation mode. In dual-model resident mode (`models-max 2`), with only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load.
 
 ---
 

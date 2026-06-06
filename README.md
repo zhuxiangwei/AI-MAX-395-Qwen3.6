@@ -395,10 +395,10 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 
 | Alias | File | Source | Quant | Arch | Size | Active Params | Role |
 |-------|------|--------|-------|------|------|---------------|------|
-| **35xb** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Resident (aux+vision) |
-| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Pool (LRU) |
+| **35xb** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Auxiliary (vision, compression, etc.) |
+| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | **Primary** (main conversations, vision) |
 | **35xq** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Deleted (file removed) |
-| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Resident (default) |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Standby (manual switch) |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Deleted (file removed) |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Deleted (file removed) |
 
@@ -414,8 +414,18 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 **File:** `/etc/nginx/sites-available/default`
 
 ```nginx
-# Rate limiting zone (60 requests/min per IP, burst=20)
+# Rate limiting zone (shared by LLM API)
 limit_req_zone $binary_remote_addr zone=api:10m rate=60r/m;
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name {your_domain};
+    client_max_body_size 10m;
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
 
 server {
     listen 443 ssl default_server;
@@ -431,6 +441,47 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
+    root /var/www/html;
+    index index.html;
+
+    # ====== Security: block Actuator sensitive endpoints ======
+    location ~* ^/admin-api/.+/actuator/(env|heapdump|threaddump|beans|configprops|mappings|conditions|loggers|scheduledtasks) {
+        return 403;
+    }
+    location ~* ^/app-api/.+/actuator/(env|heapdump|threaddump|beans|configprops|mappings|conditions|loggers|scheduledtasks) {
+        return 403;
+    }
+    location /admin/ {
+        return 403;
+    }
+
+    # ====== Backend app API (mclz-server) — separate SSH tunnel, port 48080 ======
+    location /admin-api/ {
+        proxy_pass http://127.0.0.1:48080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";      # WebSocket (Gateway /infra/ws/)
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 60s;
+    }
+
+    location /app-api/ {
+        proxy_pass http://127.0.0.1:48080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 60s;
+    }
+
+    # ====== ⭐ LLM Inference API (OpenAI-compatible) — SSH tunnel, port 8080 ======
+
     # /v1/props — Hermes capability probe, not implemented by llama-server
     location = /v1/props {
         access_log off;
@@ -438,7 +489,6 @@ server {
         return 200 '{}';
     }
 
-    # LLM API endpoint (OpenAI-compatible)
     location /v1/ {
         limit_req zone=api burst=20 nodelay;   # rate limiting (60 req/min per IP)
 
@@ -460,15 +510,54 @@ server {
         proxy_cache off;
         gzip off;              # must disable gzip for SSE streaming
     }
+
+    # ====== Frontend static apps ======
+    location = /mclz-gl { return 301 /mclz-gl/; }
+    location /mclz-gl/ {
+        alias /var/www/mclz-gl/;
+        index index.html;
+        try_files $uri $uri/ /mclz-gl/index.html;   # admin dashboard
+    }
+    location = /web_data_daping { return 301 /web_data_daping/; }
+    location /web_data_daping/ {
+        alias /var/www/web_data_daping/;
+        index index.html;
+        try_files $uri $uri/ /web_data_daping/index.html;   # data visualization screen
+    }
+    location = /mclz-jg { return 301 /mclz-jg/; }
+    location /mclz-jg/ {
+        alias /var/www/mclz-jg/;
+        index index.html;
+        try_files $uri $uri/ /mclz-jg/index.html;   # regulator portal
+    }
+    location = /mclz-qy { return 301 /mclz-qy/; }
+    location /mclz-qy/ {
+        alias /var/www/mclz-qy/;
+        index index.html;
+        try_files $uri $uri/ /mclz-qy/index.html;   # enterprise portal
+    }
+
+    # Health check
+    location /health {
+        access_log off;
+        return 200 "OK\n";
+        add_header Content-Type text/plain;
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
 }
 ```
 
 **Configuration notes:**
+- **⭐ LLM Inference API** — `/v1/` proxy to `127.0.0.1:8080` (SSH tunnel from inference server). This is the core endpoint for this project.
 - `/v1/props` returns empty JSON `{}` to avoid 404 noise from Hermes capability probes (llama-server doesn't implement this endpoint)
 - `limit_req_zone 60r/m burst=20` — supports auxiliary tasks (compression, vision, etc.) that generate burst requests
-- `proxy_pass http://127.0.0.1:8080` — SSH reverse tunnel from inference server
-- All timeouts aligned: Nginx 3600s ↔ llama-server 3600s ↔ Hermes 3600s
-- Only LLM inference service (`/v1/`) is shown here; other application proxies are outside this project's scope
+- `/admin-api/` and `/app-api/` proxy to the backend app server (mclz-server) via a separate SSH tunnel (port 48080)
+- Actuator endpoints blocked for security (env, heapdump, etc.)
+- Frontend static apps: `/mclz-gl/` (admin), `/mclz-jg/` (regulator), `/mclz-qy/` (enterprise), `/web_data_daping/` (visualization screen)
+- All LLM timeouts aligned: Nginx 3600s ↔ llama-server 3600s ↔ Hermes 3600s
 
 **Apply:** `sudo nginx -t && sudo systemctl reload nginx`
 

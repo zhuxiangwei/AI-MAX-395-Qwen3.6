@@ -418,19 +418,6 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 limit_req_zone $binary_remote_addr zone=api:10m rate=60r/m;
 
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-
-    server_name {your_domain};
-    client_max_body_size 10m;
-
-    # HTTP → HTTPS redirect
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-server {
     listen 443 ssl default_server;
     listen [::]:443 ssl default_server;
 
@@ -444,50 +431,6 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    root /var/www/html;
-    index index.html;
-
-    # ====== Security: block Actuator sensitive endpoints ======
-    location ~* ^/admin-api/.+/actuator/(env|heapdump|threaddump|beans|configprops|mappings|conditions|loggers|scheduledtasks) {
-        return 403;
-    }
-    location ~* ^/app-api/.+/actuator/(env|heapdump|threaddump|beans|configprops|mappings|conditions|loggers|scheduledtasks) {
-        return 403;
-    }
-    location /admin/ {
-        return 403;
-    }
-
-    # Backend API proxy — forwarded to SSH reverse tunnel Gateway
-    location /admin-api/ {
-        proxy_pass http://127.0.0.1:48080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # WebSocket support
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        proxy_read_timeout 120s;
-        proxy_connect_timeout 60s;
-    }
-
-    location /app-api/ {
-        proxy_pass http://127.0.0.1:48080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-        proxy_connect_timeout 60s;
-    }
-
-    # ====== LLM API endpoint (OpenAI-compatible) ======
-
     # /v1/props — Hermes capability probe, not implemented by llama-server
     location = /v1/props {
         access_log off;
@@ -495,10 +438,11 @@ server {
         return 200 '{}';
     }
 
+    # LLM API endpoint (OpenAI-compatible)
     location /v1/ {
         limit_req zone=api burst=20 nodelay;   # rate limiting (60 req/min per IP)
 
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:8080;      # SSH reverse tunnel → inference server
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -516,26 +460,15 @@ server {
         proxy_cache off;
         gzip off;              # must disable gzip for SSE streaming
     }
-
-    # Health check
-    location /health {
-        access_log off;
-        return 200 "OK\n";
-        add_header Content-Type text/plain;
-    }
-
-    location / {
-        try_files $uri $uri/ =404;
-    }
 }
 ```
 
 **Configuration notes:**
 - `/v1/props` returns empty JSON `{}` to avoid 404 noise from Hermes capability probes (llama-server doesn't implement this endpoint)
-- `limit_req_zone 60r/m burst=20` — increased from original 10r/m to support auxiliary tasks (compression, vision, etc.) that generate burst requests
-- `/admin-api/` and `/app-api/` proxy to the backend app server via a separate SSH tunnel (port 48080)
-- Actuator endpoints are blocked for security (env, heapdump, etc.)
+- `limit_req_zone 60r/m burst=20` — supports auxiliary tasks (compression, vision, etc.) that generate burst requests
+- `proxy_pass http://127.0.0.1:8080` — SSH reverse tunnel from inference server
 - All timeouts aligned: Nginx 3600s ↔ llama-server 3600s ↔ Hermes 3600s
+- Only LLM inference service (`/v1/`) is shown here; other application proxies are outside this project's scope
 
 **Apply:** `sudo nginx -t && sudo systemctl reload nginx`
 
@@ -737,7 +670,7 @@ systemctl --user enable --now gpu-temp-log.timer
 
 ```ini
 
-[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]
+[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]       # alias: 35xb — auxiliary model (vision, compression, etc.)
 cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
@@ -754,7 +687,7 @@ reasoning-budget = 8192
 threads = 8
 alias = 35xb
 
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]
+[Qwen3.6-35B-A3B-UD-Q8_K_XL]                # alias: 358 — primary model (main conversations, vision)
 cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
@@ -771,7 +704,7 @@ reasoning-budget = 8192
 threads = 8
 alias = 358
 
-[Qwen3.6-27B-UD-Q8_K_XL]
+[Qwen3.6-27B-UD-Q8_K_XL]                    # alias: 278 — standby (manual switch for specific tasks)
 cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
@@ -842,11 +775,22 @@ Clients specify the `model` field in API requests. Both **alias short names** an
 # Using alias (recommended)
 curl https://{your_domain}/v1/chat/completions \
   -H "Authorization: Bearer {your_api_key}" \
-  -d '{"model": "358", ...}'
+  -d '{"model": "358", ...}'   # primary model
 
 # Using full filename (also works)
 curl https://{your_domain}/v1/chat/completions \
   -H "Authorization: Bearer {your_api_key}" \
+  -d '{"model": "Qwen3.6-35B-A3B-UD-Q8_K_XL", ...}'
+
+# Switch to auxiliary model (for vision, compression, etc.)
+curl https://{your_domain}/v1/chat/completions \
+  -H "Authorization: Bearer {your_api_key}" \
+  -d '{"model": "35xb", ...}'
+
+# Switch to standby model (for specific tasks)
+curl https://{your_domain}/v1/chat/completions \
+  -H "Authorization: Bearer {your_api_key}" \
+  -d '{"model": "278", ...}'
   -d '{"model": "Qwen3.6-35B-A3B-UD-Q8_K_XL", ...}'
 ```
 
@@ -880,12 +824,12 @@ providers:
       "358":
         context_length: 262144
         max_output_tokens: 32768
-        # supports_vision not set - use 35xb for vision tasks instead
+        supports_vision: true    # 358 has mmproj, primary model with vision
     request_timeout_seconds: 3600  # API request timeout (aligned with llama-server --timeout)
     stale_timeout_seconds: 3600   # stream stale detection (must match request_timeout for long contexts)
 
 model:
-  default: "35xb"
+  default: "358"                   # primary model: 358 (Q8, vision, best generation quality)
   provider: "custom:local-llm"
   base_url: "https://{your_domain}/v1"
   extra_body:
@@ -906,6 +850,9 @@ compression:
   protect_last_n: 20             # never compress the most recent 20 messages
 
 auxiliary:                         # all auxiliary tasks routed to 35xb (vision-capable, fast)
+                                  # 358 = primary model (main conversations)
+                                  # 35xb = auxiliary model (compression, vision, etc.)
+                                  # 278 = standby (manual switch for specific tasks)
   vision:
     provider: custom:local-llm
     model: 35xb
@@ -981,13 +928,13 @@ auxiliary:                         # all auxiliary tasks routed to 35xb (vision-
 - `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
 - ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
 - `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
-- `supports_vision: true` on 35xb only (358 has mmproj but not registered for vision; 27B Dense has no vision)
+- `supports_vision: true` on 358 and 35xb (both have mmproj); 278 (27B Dense) has no vision
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
 - `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
 - `stale_timeout_seconds: 3600` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
 - `gateway_timeout: 3600` — gateway-level timeout aligned with all other timeouts
-- `auxiliary` — all 11 tasks routed to 35xb (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout; `kanban_decomposer` and `curator` use `provider: auto` (falls back to default model) (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout
+- `auxiliary` — all 11 tasks routed to 35xb (vision-capable APEX I-Balanced, lower latency than 358); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout; `kanban_decomposer` and `curator` use `provider: auto` (falls back to default model 358)
 - `auxiliary.vision.base_url` — ⚠️ **MUST be explicit** set to `https://{your_domain}/v1`. Empty string causes `resolve_vision_provider_client()` to skip the explicit branch, fall through to `_get_cached_client(is_vision=True)` → returns None → RuntimeError. Non-vision auxiliary tasks are safe with empty string (different code path). See Known Issues.
 
 **Environment variable overrides** (`~/.hermes/.env`):
@@ -1290,4 +1237,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-06 (Nginx /v1/props, rate limit 60r/m, Hermes default=35xb, auxiliary 11 tasks, link latency ref)*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-07 (primary model 358+vision, auxiliary 35xb, 278 standby, Nginx inference-only config, link latency ref)*

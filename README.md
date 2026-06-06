@@ -414,8 +414,8 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 **File:** `/etc/nginx/sites-available/default`
 
 ```nginx
-# Rate limiting zone (10 requests/min per IP, burst=5)
-limit_req_zone $binary_remote_addr zone=api:10m rate=10r/m;
+# Rate limiting zone (60 requests/min per IP, burst=20)
+limit_req_zone $binary_remote_addr zone=api:10m rate=60r/m;
 
 server {
     listen 80 default_server;
@@ -447,13 +447,56 @@ server {
     root /var/www/html;
     index index.html;
 
-    location / {
-        try_files $uri $uri/ =404;
+    # ====== Security: block Actuator sensitive endpoints ======
+    location ~* ^/admin-api/.+/actuator/(env|heapdump|threaddump|beans|configprops|mappings|conditions|loggers|scheduledtasks) {
+        return 403;
+    }
+    location ~* ^/app-api/.+/actuator/(env|heapdump|threaddump|beans|configprops|mappings|conditions|loggers|scheduledtasks) {
+        return 403;
+    }
+    location /admin/ {
+        return 403;
     }
 
-    # LLM API endpoint (OpenAI-compatible)
+    # Backend API proxy — forwarded to SSH reverse tunnel Gateway
+    location /admin-api/ {
+        proxy_pass http://127.0.0.1:48080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 60s;
+    }
+
+    location /app-api/ {
+        proxy_pass http://127.0.0.1:48080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 60s;
+    }
+
+    # ====== LLM API endpoint (OpenAI-compatible) ======
+
+    # /v1/props — Hermes capability probe, not implemented by llama-server
+    location = /v1/props {
+        access_log off;
+        default_type application/json;
+        return 200 '{}';
+    }
+
     location /v1/ {
-        limit_req zone=api burst=5 nodelay;   # rate limiting
+        limit_req zone=api burst=20 nodelay;   # rate limiting (60 req/min per IP)
 
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
@@ -480,10 +523,31 @@ server {
         return 200 "OK\n";
         add_header Content-Type text/plain;
     }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
 }
 ```
 
+**Configuration notes:**
+- `/v1/props` returns empty JSON `{}` to avoid 404 noise from Hermes capability probes (llama-server doesn't implement this endpoint)
+- `limit_req_zone 60r/m burst=20` — increased from original 10r/m to support auxiliary tasks (compression, vision, etc.) that generate burst requests
+- `/admin-api/` and `/app-api/` proxy to the backend app server via a separate SSH tunnel (port 48080)
+- Actuator endpoints are blocked for security (env, heapdump, etc.)
+- All timeouts aligned: Nginx 3600s ↔ llama-server 3600s ↔ Hermes 3600s
+
 **Apply:** `sudo nginx -t && sudo systemctl reload nginx`
+
+**Link latency reference** (WSL → Cloud Nginx → SSH tunnel → Inference box):
+
+| Endpoint | TTFB | Notes |
+|----------|------|-------|
+| `/v1/props` | ~165ms | Nginx returns `{}` directly |
+| `/v1/models` | ~390-480ms | Proxied to llama-server |
+| `/v1/chat/completions` (short) | ~1.3s | Includes inference time |
+
+> Pure link overhead (DNS + TLS + SSH tunnel): ~400-500ms. This is inherent to the SSH reverse tunnel architecture.
 
 ### 2. Cloud SSH Server
 
@@ -806,10 +870,6 @@ providers:
       chat_template_kwargs:
         enable_thinking: true       # enables thinking mode
     models:
-      "358":
-        context_length: 262144     # per-slot context (ctx-size ÷ parallel)
-        max_output_tokens: 32768
-        supports_vision: true
       "278":
         context_length: 262144
         max_output_tokens: 32768
@@ -817,11 +877,15 @@ providers:
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true
+      "358":
+        context_length: 262144
+        max_output_tokens: 32768
+        # supports_vision not set - use 35xb for vision tasks instead
     request_timeout_seconds: 3600  # API request timeout (aligned with llama-server --timeout)
     stale_timeout_seconds: 3600   # stream stale detection (must match request_timeout for long contexts)
 
 model:
-  default: "278"
+  default: "35xb"
   provider: "custom:local-llm"
   base_url: "https://{your_domain}/v1"
   extra_body:
@@ -845,7 +909,7 @@ auxiliary:                         # all auxiliary tasks routed to 35xb (vision-
   vision:
     provider: custom:local-llm
     model: 35xb
-    base_url: "https://{your_domain}/v1"   # ⚠️ MUST be explicit — empty string causes RuntimeError (see Known Issues)
+    base_url: "https://{your_domain}/v1"   # MUST be explicit - empty string causes RuntimeError
     timeout: 3600
     extra_body:
       chat_template_kwargs:
@@ -899,7 +963,7 @@ auxiliary:                         # all auxiliary tasks routed to 35xb (vision-
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
-  kanban_decomposer:                # uses auto provider → falls back to default model 278
+  kanban_decomposer:                # uses auto provider - falls back to default model 35xb
     provider: auto
     timeout: 3600
   profile_describer:
@@ -909,22 +973,21 @@ auxiliary:                         # all auxiliary tasks routed to 35xb (vision-
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
-  curator:                          # uses auto provider → falls back to default model 278
+  curator:                          # uses auto provider - falls back to default model 35xb
     provider: auto
     timeout: 3600
-```
 
 **Configuration notes:**
 - `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
 - ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
 - `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
-- `supports_vision: true` on 35B models only (358/35xb have mmproj); 27B Dense has no vision
+- `supports_vision: true` on 35xb only (358 has mmproj but not registered for vision; 27B Dense has no vision)
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
 - `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
 - `stale_timeout_seconds: 3600` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
 - `gateway_timeout: 3600` — gateway-level timeout aligned with all other timeouts
-- `auxiliary` — all 11 tasks routed to 35xb (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout
+- `auxiliary` — all 11 tasks routed to 35xb (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout; `kanban_decomposer` and `curator` use `provider: auto` (falls back to default model) (vision-capable APEX I-Balanced); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout
 - `auxiliary.vision.base_url` — ⚠️ **MUST be explicit** set to `https://{your_domain}/v1`. Empty string causes `resolve_vision_provider_client()` to skip the explicit branch, fall through to `_get_cached_client(is_vision=True)` → returns None → RuntimeError. Non-vision auxiliary tasks are safe with empty string (different code path). See Known Issues.
 
 **Environment variable overrides** (`~/.hermes/.env`):
@@ -1227,4 +1290,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-06*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-06 (Nginx /v1/props, rate limit 60r/m, Hermes default=35xb, auxiliary 11 tasks, link latency ref)*

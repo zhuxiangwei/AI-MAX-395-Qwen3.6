@@ -488,8 +488,6 @@ server {
 }
 ```
 
-> ⚠️ This config shows only the LLM inference service. The same Nginx instance also hosts backend APIs (`/admin-api/`, `/app-api/`) and frontend apps (`/mclz-gl/`, `/mclz-jg/`, `/mclz-qy/`, `/web_data_daping/`) for the mclz (明厨亮灶) platform — those are separate projects, not part of this deployment.
-
 **Configuration notes:**
 - **`/v1/`** — OpenAI-compatible API proxy to `127.0.0.1:8080` (SSH reverse tunnel from inference server)
 - `/v1/props` returns empty JSON `{}` to avoid 404 noise from Hermes capability probes (llama-server doesn't implement this endpoint)

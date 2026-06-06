@@ -444,43 +444,7 @@ server {
     root /var/www/html;
     index index.html;
 
-    # ====== Security: block Actuator sensitive endpoints ======
-    location ~* ^/admin-api/.+/actuator/(env|heapdump|threaddump|beans|configprops|mappings|conditions|loggers|scheduledtasks) {
-        return 403;
-    }
-    location ~* ^/app-api/.+/actuator/(env|heapdump|threaddump|beans|configprops|mappings|conditions|loggers|scheduledtasks) {
-        return 403;
-    }
-    location /admin/ {
-        return 403;
-    }
-
-    # ====== Backend app API (mclz-server) — separate SSH tunnel, port 48080 ======
-    location /admin-api/ {
-        proxy_pass http://127.0.0.1:48080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";      # WebSocket (Gateway /infra/ws/)
-        proxy_read_timeout 120s;
-        proxy_connect_timeout 60s;
-    }
-
-    location /app-api/ {
-        proxy_pass http://127.0.0.1:48080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-        proxy_connect_timeout 60s;
-    }
-
-    # ====== ⭐ LLM Inference API (OpenAI-compatible) — SSH tunnel, port 8080 ======
+    # ====== LLM Inference API (OpenAI-compatible) — SSH tunnel port 8080 → llama-server ======
 
     # /v1/props — Hermes capability probe, not implemented by llama-server
     location = /v1/props {
@@ -490,7 +454,7 @@ server {
     }
 
     location /v1/ {
-        limit_req zone=api burst=20 nodelay;   # rate limiting (60 req/min per IP)
+        limit_req zone=api burst=20 nodelay;
 
         proxy_pass http://127.0.0.1:8080;      # SSH reverse tunnel → inference server
         proxy_http_version 1.1;
@@ -508,33 +472,7 @@ server {
         proxy_set_header Connection '';
         proxy_buffering off;
         proxy_cache off;
-        gzip off;              # must disable gzip for SSE streaming
-    }
-
-    # ====== Frontend static apps ======
-    location = /mclz-gl { return 301 /mclz-gl/; }
-    location /mclz-gl/ {
-        alias /var/www/mclz-gl/;
-        index index.html;
-        try_files $uri $uri/ /mclz-gl/index.html;   # admin dashboard
-    }
-    location = /web_data_daping { return 301 /web_data_daping/; }
-    location /web_data_daping/ {
-        alias /var/www/web_data_daping/;
-        index index.html;
-        try_files $uri $uri/ /web_data_daping/index.html;   # data visualization screen
-    }
-    location = /mclz-jg { return 301 /mclz-jg/; }
-    location /mclz-jg/ {
-        alias /var/www/mclz-jg/;
-        index index.html;
-        try_files $uri $uri/ /mclz-jg/index.html;   # regulator portal
-    }
-    location = /mclz-qy { return 301 /mclz-qy/; }
-    location /mclz-qy/ {
-        alias /var/www/mclz-qy/;
-        index index.html;
-        try_files $uri $uri/ /mclz-qy/index.html;   # enterprise portal
+        gzip off;
     }
 
     # Health check
@@ -550,14 +488,13 @@ server {
 }
 ```
 
+> ⚠️ This config shows only the LLM inference service. The same Nginx instance also hosts backend APIs (`/admin-api/`, `/app-api/`) and frontend apps (`/mclz-gl/`, `/mclz-jg/`, `/mclz-qy/`, `/web_data_daping/`) for the mclz (明厨亮灶) platform — those are separate projects, not part of this deployment.
+
 **Configuration notes:**
-- **⭐ LLM Inference API** — `/v1/` proxy to `127.0.0.1:8080` (SSH tunnel from inference server). This is the core endpoint for this project.
+- **`/v1/`** — OpenAI-compatible API proxy to `127.0.0.1:8080` (SSH reverse tunnel from inference server)
 - `/v1/props` returns empty JSON `{}` to avoid 404 noise from Hermes capability probes (llama-server doesn't implement this endpoint)
 - `limit_req_zone 60r/m burst=20` — supports auxiliary tasks (compression, vision, etc.) that generate burst requests
-- `/admin-api/` and `/app-api/` proxy to the backend app server (mclz-server) via a separate SSH tunnel (port 48080)
-- Actuator endpoints blocked for security (env, heapdump, etc.)
-- Frontend static apps: `/mclz-gl/` (admin), `/mclz-jg/` (regulator), `/mclz-qy/` (enterprise), `/web_data_daping/` (visualization screen)
-- All LLM timeouts aligned: Nginx 3600s ↔ llama-server 3600s ↔ Hermes 3600s
+- All timeouts aligned: Nginx 3600s ↔ llama-server 3600s ↔ Hermes 3600s
 
 **Apply:** `sudo nginx -t && sudo systemctl reload nginx`
 

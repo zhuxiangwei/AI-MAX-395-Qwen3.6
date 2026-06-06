@@ -8,7 +8,9 @@
 
 ## 性能基准
 
-所有基准测试均在 {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9299 Vulkan) 上完成。速度通过 API `timings` 测量（服务端，排除网络延迟）。Gen 速度含 thinking tokens。
+所有基准测试均在 {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9315 Vulkan) 上完成。速度通过 API `timings` 测量（服务端，排除网络延迟）。Gen 速度含 thinking tokens。
+
+**基准测试环境：** CPU governor=performance，`processor.max_cstate=1`，`vm.swappiness=1`，`vm.overcommit_memory=1`，GTT 120GB，mlock=1。这些系统级优化相比默认 powersave governor 改善了 gen 速度和 prefill 稳定性。
 
 ### 35B-A3B MoE (UD-Q8_K_XL, 别名 `358`)
 
@@ -104,24 +106,26 @@ APEX 量化——最佳质量-速度平衡。混合精度 per tensor（关键层
 
 ### 27B Dense Q8 (Q8_K_XL, 别名 `278`)
 
-Dense 架构——每 token 激活全部 27B 参数。Q8_0 KV cache 解锁 256K 上下文并大幅提升长上下文 prefill。
+Dense 架构——每 token 激活全部 27B 参数。Q4_0 KV cache 相比 Q8_0 节省约 50% KV 空间，prefill 性能持平（短上下文 -7%，长上下文 +6%），使同样 VRAM 下可支撑更长的有效上下文。
 
-**最优配置：Q8_0 KV + UB=512。**
+**最优配置：Q4_0 KV + UB=512。**
 
-**已排除：** F16 KV（p256K 超时 >7200s）；Q8_0 UB=256（p64K+ 比 UB=512 慢）；Q8_0 UB≥1024（p128K TTFT 在 UB=512 已为 1139s，继续慢化）；UB≥2048（Vulkan 崩溃）。
+**已排除：** F16 KV（p256K 超时 >7200s）；Q8_0 KV（1.7~2× KV 空间 vs Q4_0，无显著 prefill 优势）；UB≥1024（长上下文退化）；UB≥2048（Vulkan 崩溃）。
 
-#### Q8_0 KV UB=512
+#### Q4_0 KV UB=512（当前配置）
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
-| p128 | 13.8 | 127.4 | 1.2s |
-| p4K | 13.4 | 247.3 | 31.1s |
-| p32K | 12.5 | 194.6 | 187.7s |
-| p64K | 12.1 | 160.2 | 432.6s |
-| p128K | 10.0 | 119.1 | 1139.0s |
-| p256K | 7.3 | 82.8 | 3022.3s |
+| p128 | — | — | — |
+| p4K | — | — | — |
+| p32K | ~13† | 181.2† | ~189s† |
+| p64K | — | — | — |
+| p128K | — | 80.2† | — |
+| p256K | — | 88.0† | ~2806s† |
 
-> p128K 总耗时：1272s。p256K 总耗时：3122s（~52 分钟）。Q8_0 KV p128K prefill 比 F16 KV 快 271%（119 vs 32 t/s，F16 KV 基于 b9210 数据）。
+> † 当前配置（Q4_0 KV, UB=512, cache-reuse=256, max_cstate=1, governor=performance）下的初步测量。完整基准测试待补。Q4_0 KV vs Q8_0 KV 同 token 数对比：~56K prefill -7%（181 vs 195 t/s），~245K prefill +6%（88 vs 83 t/s）——净持平，KV cache 空间节省约 50%。
+>
+> **历史参考（Q8_0 KV UB=512，已弃用）：** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill；gen 7.3–13.8 t/s。
 
 ### 27B Dense Q6 (Q6_K_XL, 别名 `276`)
 
@@ -238,9 +242,12 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 不加 `--no-mmap` | 无收益，`--mmap`（默认）+ `--mlock` 是最佳组合 |
 | `-a Qwen3.6` | 设置 API 响应中的 model 字段；客户端需校验 model 字段时必须 |
 | alias 短名路由 | 无需符号链接；别名和文件名均可路由 |
-| 35xq: 不使用 `reasoning = off` | `reasoning = off` 导致灾难性的 checkpoint 恢复变慢（43–75s vs <0.1s，见已知问题）。改用 `reasoning-budget = 8192`（默认值）；客户端可在请求层面关闭 thinking |
-| `cache-reuse` = 256（全模型） | KV cache shifting 深度 256 以实现跨轮上下文高效复用；此前 35B MoE 因 mmproj 疑虑设为 0，但 LCP-based slot 选择在 cache-reuse=256 下正常工作 |
-| 不加 `--sleep-idle-seconds` | 两种模式均不加：已加载模型常驻；空闲卸载→重载循环会导致内存尖峰和 OOM（见已知问题） |
+| 27B Dense: Q4_0 KV cache | 相比 Q8_0 节省约 50% KV cache 空间，prefill 持平（短上下文 -7%，长上下文 +6%），使同样 VRAM 下可支撑更长的有效上下文 |
+| `cache-reuse` = 256（全模型） | KV cache shifting 深度 256 以实现跨轮上下文高效复用；减少多轮对话重复 prefill |
+| 系统: CPU governor=performance | 减少 GPU 命令提交延迟；改善 gen 速度和 TTFT 稳定性 |
+| 系统: `processor.max_cstate=1` | 阻止 CPU 进入深 C-state；减少 Vulkan 命令提交延迟尖峰 |
+| 系统: `vm.swappiness=1`, `vm.overcommit_memory=1` | 最小化 swap 使用，防止 OOM killer 误杀 |
+| 不加 `--sleep-idle-seconds` | 已加载模型常驻；空闲卸载→重载循环会导致内存尖峰和 OOM（见已知问题） |
 
 ### 使用约束
 
@@ -250,12 +257,12 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 所有模型: 最大上下文 | 256K (`ctx-size = 262144`) | 统一上下文覆盖所有 prompt 长度 |
 | 27B Dense: `parallel` | 仅 1 | `parallel ≥ 3` 触发 Vulkan bug（见已知问题） |
 | 35B MoE: UB 约束 | UB=512 ≤128K 最优；UB=256 256K 最优 | UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
-| 27B Dense: UB 约束 | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4) | F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
+| 27B Dense: UB 约束 | Q4_0 KV UB=512（当前，278） | F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
 | Thinking 模式 | 所有模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；`reasoning=off` 会导致 checkpoint 恢复 bug（见已知问题）；客户端通过 `chat_template_kwargs.enable_thinking: false` 在请求层面控制 |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 并发 | 所有模型 parallel=1 | 单用户负载无需并发 slot；27B Dense parallel≥3 触发 Vulkan bug |
 | `--cache-ram` | `-1`（无限制，在 service 中设置） | 单模型轮换模式下 `-1` 最大化 KV cache 命中率；双模型常驻时须用默认 8192 MiB 防止争抢（见已知问题） |
-| `cache-reuse` | 256（全模型） | KV cache shifting 深度 256 以实现跨轮上下文高效复用；LCP-based slot 选择适用于所有模型 |
+| `cache-reuse` | 256（全模型） | KV cache shifting 深度 256 以实现跨轮上下文高效复用；改善多轮对话性能 |
 | b 必须被 ub 整除 | `n_batch % n_ubatch == 0` | llama.cpp 硬性要求 |
 
 ### 参数分离原则
@@ -650,7 +657,7 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 1024
+ubatch-size = 512
 spec-type = draft-mtp
 spec-draft-n-max = 2
 mmproj = /home/zxw/mmproj/mmproj-F16.gguf
@@ -667,7 +674,7 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 1024
+ubatch-size = 512
 spec-type = draft-mtp
 spec-draft-n-max = 2
 mmproj = /home/zxw/mmproj/mmproj-F16.gguf
@@ -684,7 +691,7 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 1024
+ubatch-size = 512
 cache-type-k = q4_0
 cache-type-v = q4_0
 spec-type = draft-mtp

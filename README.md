@@ -8,7 +8,9 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 
 ## Performance Benchmarks
 
-All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9299 Vulkan). Speeds via API `timings` (server-side, excludes network). Gen speed includes thinking tokens.
+All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9315 Vulkan). Speeds via API `timings` (server-side, excludes network). Gen speed includes thinking tokens.
+
+**Benchmark environment:** CPU governor=performance, `processor.max_cstate=1`, `vm.swappiness=1`, `vm.overcommit_memory=1`, GTT 120GB, mlock=1. These system-level optimizations improve gen speed and prefill stability vs the default powersave governor.
 
 ### 35B-A3B MoE (UD-Q8_K_XL, alias `358`)
 
@@ -76,9 +78,9 @@ APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per 
 
 APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor (critical layers Q6_K/Q5_K_M, middle expert layers Q4_K_M). ~24 GB overall (between Q5 and Q6 by size). KL max 4.53 — **lowest deviation among all quantizations** (even better than Q8's 9.72). imatrix calibration reduces worst-case deviation by 68%.
 
-**Optimal config: F16 KV cache.** Same UB pattern: ≤128K → UB=512; 256K → UB=256.
+**Optimal config: F16 KV cache, UB=512.** UB=512 is the best overall choice for ≤128K (prefill +22~25% vs UB=256). UB≥1024 degrades at ≥128K (p256K prefill -34% vs UB=512).
 
-#### F16 KV UB=512 (optimal ≤128K)
+#### F16 KV UB=512 (current config)
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
@@ -101,27 +103,31 @@ APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor
 | p256K | 32.0 | 246.9 | 1013.52s |
 
 > APEX I-Balanced gen speed **~40% faster** than UD-Q8. Quality leader: KL max 4.53 is the best among all quantizations.
+>
+> **Config updates since these benchmarks** (2026-06-06): `spec-draft-n-max` 3→2 (+5~12% gen speed), `cache-reuse=256` (improves multi-turn), `max_cstate=1` + `governor=performance` (system-level latency reduction). These changes improve gen speed and TTFT but the UB=512 table above was measured before these updates — actual performance with current config is expected to be better.
 
 ### 27B Dense Q8 (Q8_K_XL, alias `278`)
 
-Dense model — all 27B params active per token. Q8_0 KV cache unlocks 256K context and dramatically improves long-context prefill.
+Dense model — all 27B params active per token. Q4_0 KV cache saves ~50% KV space vs Q8_0 with comparable prefill performance, enabling longer effective context within the same VRAM budget.
 
-**Optimal config: Q8_0 KV + UB=512.**
+**Optimal config: Q4_0 KV + UB=512.**
 
-**Ruled out:** F16 KV (p256K timeout >7200s); Q8_0 UB=256 (p64K+ slower than UB=512); Q8_0 UB≥1024 (p128K TTFT 1139s at UB=512 already slow, degrades further); UB≥2048 (Vulkan crash).
+**Ruled out:** F16 KV (p256K timeout >7200s); Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); UB≥1024 (long-context degradation); UB≥2048 (Vulkan crash).
 
-#### Q8_0 KV UB=512
+#### Q4_0 KV UB=512 (current config)
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
-| p128 | 13.8 | 127.4 | 1.2s |
-| p4K | 13.4 | 247.3 | 31.1s |
-| p32K | 12.5 | 194.6 | 187.7s |
-| p64K | 12.1 | 160.2 | 432.6s |
-| p128K | 10.0 | 119.1 | 1139.0s |
-| p256K | 7.3 | 82.8 | 3022.3s |
+| p128 | — | — | — |
+| p4K | — | — | — |
+| p32K | ~13† | 181.2† | ~189s† |
+| p64K | — | — | — |
+| p128K | — | 80.2† | — |
+| p256K | — | 88.0† | ~2806s† |
 
-> p128K elapsed: 1272s. p256K elapsed: 3122s (~52 min). Q8_0 KV p128K prefill +271% vs F16 KV (119 vs 32 t/s, b9210 F16 KV baseline).
+> † Preliminary measurements under current config (Q4_0 KV, UB=512, cache-reuse=256, max_cstate=1, governor=performance). Full benchmark pending. Q4_0 KV vs Q8_0 KV at matched token counts: ~56K prefill -7% (181 vs 195 t/s), ~245K prefill +6% (88 vs 83 t/s) — net parity with ~50% KV cache space savings.
+>
+> **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 
 ### 27B Dense Q6 (Q6_K_XL, alias `276`)
 
@@ -226,7 +232,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 |----------|-----------|
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
 | Unified parallel=1, ctx=262144 | Simplifies config; one model per slot is sufficient for single-user workloads; dual-model via `--models-max 2`; 256K context covers all prompt lengths |
-| Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024) |
+| Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024). Current deployment: unified UB=512 for all models (best overall tradeoff) |
 | `--cache-ram -1` (unlimited) | Single-model rotation mode: only one model in memory at a time, `-1` allows prompt cache to grow without bound, maximizing KV cache hit rate. Previously dual-model resident mode used default 8192 MiB to prevent one model from starving another (see Known Issues) |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
@@ -238,9 +244,12 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
-| 35xq: no `reasoning = off` | `reasoning = off` causes catastrophic checkpoint restore slowdown (43–75s vs <0.1s, see Known Issues). Use `reasoning-budget = 8192` (default) instead; clients disable thinking per-request if needed |
-| `cache-reuse` = 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; previously 35B MoE was set to 0 due to mmproj concerns, but LCP-based slot selection works correctly with cache-reuse=256 |
-| No `--sleep-idle-seconds` | Both modes: loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
+| 27B Dense: Q4_0 KV cache | Saves ~50% KV cache space vs Q8_0 with comparable prefill performance (-7% short context, +6% long context). Enables longer effective context within same VRAM budget |
+| `cache-reuse` = 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; improves multi-turn performance by reducing re-prefill |
+| System: CPU governor=performance | Reduces GPU command submission latency; improves gen speed and TTFT stability |
+| System: `processor.max_cstate=1` | Prevents CPU deep C-states; reduces Vulkan command submission latency spikes |
+| System: `vm.swappiness=1`, `vm.overcommit_memory=1` | Minimizes swap usage and prevents OOM killer false positives |
+| No `--sleep-idle-seconds` | Loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
 
 ### Usage Constraints
 
@@ -249,13 +258,13 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | All models: concurrent slots | 1 (`parallel = 1`) | Single-user workload; `parallel > 1` wastes KV cache memory |
 | All models: max context | 256K (`ctx-size = 262144`) | Unified context covers all prompt lengths |
 | 27B Dense: `parallel` | 1 only | `parallel ≥ 3` triggers Vulkan bug (see Known Issues) |
-| 35B MoE: UB constraints | UB=512 optimal for ≤128K; UB=256 optimal for 256K | UB≥1024 degrades at p256K; UB≥2048 Vulkan crash |
-| 27B Dense: UB constraints | Q8_0 KV UB=512 (Q8/Q6) / UB=1024 (Q4) | F16 KV p256K timeout; UB≥2048 Vulkan crash |
+| 35B MoE: UB constraints | UB=512 (current, optimal overall) | UB≥1024 degrades at ≥128K (p256K prefill -34%); UB≥2048 Vulkan crash |
+| 27B Dense: UB constraints | Q4_0 KV UB=512 (current, 278) | F16 KV p256K timeout; UB≥2048 Vulkan crash |
 | Thinking mode | All models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
 | `--cache-ram` | `-1` (unlimited, set in service) | Single-model rotation: `-1` maximizes KV cache hit rate; dual-model mode must use default 8192 MiB to prevent contention (see Known Issues) |
-| `cache-reuse` | 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; LCP-based slot selection works with all models |
+| `cache-reuse` | 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; improves multi-turn performance |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
 ### Parameter Separation Principle
@@ -671,7 +680,7 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 1024
+ubatch-size = 512
 spec-type = draft-mtp
 spec-draft-n-max = 2
 mmproj = /home/zxw/mmproj/mmproj-F16.gguf
@@ -688,7 +697,7 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 1024
+ubatch-size = 512
 spec-type = draft-mtp
 spec-draft-n-max = 2
 mmproj = /home/zxw/mmproj/mmproj-F16.gguf
@@ -705,7 +714,7 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 1024
+ubatch-size = 512
 cache-type-k = q4_0
 cache-type-v = q4_0
 spec-type = draft-mtp

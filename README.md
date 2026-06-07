@@ -110,11 +110,11 @@ APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor
 
 Dense model — all 27B params active per token. ~13 t/s generation. Current Hermes default model (highest quality).
 
-**Config: Q8_0 KV + UB=256.**
+**Config: F16 KV + UB=256.** (default KV type, no explicit `cache-type-k`/`cache-type-v` in INI)
 
-**Ruled out:** F16 KV (p256K timeout >7200s); Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); UB≥1024 (long-context degradation); UB≥2048 (Vulkan crash).
+**Ruled out:** Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); Q4_0 KV (saves ~50% space, comparable performance, but not currently used); UB≥1024 (long-context degradation); UB≥2048 (Vulkan crash).
 
-#### Q8_0 KV UB=256 (current config)
+#### F16 KV UB=256 (current config)
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
@@ -125,7 +125,7 @@ Dense model — all 27B params active per token. ~13 t/s generation. Current Her
 | p128K | — | 80.2† | — |
 | p256K | — | 88.0† | ~2806s† |
 
-> † Preliminary measurements under current config (Q8_0 KV, UB=256, cache-reuse=256, max_cstate=1, governor=performance). Full benchmark pending.
+> † Preliminary measurements under current config (F16 KV, UB=256, cache-reuse=256, max_cstate=1, governor=performance). Full benchmark pending.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 
@@ -244,7 +244,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
-| 27B Dense: Q8_0 KV cache | Default KV cache type. Q4_0 KV was previously tested (saves ~50% space, comparable prefill) but removed from current INI for stability |
+| All models: F16 KV cache (default) | No explicit `cache-type-k`/`cache-type-v` in INI — llama-server defaults to F16. Q4_0 KV was previously tested on 278 (saves ~50% space, comparable prefill) but not currently used |
 | `cache-reuse` = 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; improves multi-turn performance by reducing re-prefill |
 | System: CPU governor=performance | Reduces GPU command submission latency; improves gen speed and TTFT stability |
 | System: `processor.max_cstate=1` | Prevents CPU deep C-states; reduces Vulkan command submission latency spikes |
@@ -259,7 +259,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | All models: max context | 256K (`ctx-size = 262144`) | Unified context covers all prompt lengths |
 | 27B Dense: `parallel` | 1 only | `parallel ≥ 3` triggers Vulkan bug (see Known Issues) |
 | 35B MoE: UB constraints | UB=256 (current, stability-optimized) | UB≥1024 degrades at ≥128K (p256K prefill -34%); UB≥2048 Vulkan crash |
-| 27B Dense: UB constraints | Q8_0 KV UB=256 (current, 278) | F16 KV p256K timeout; UB≥2048 Vulkan crash |
+| 27B Dense: UB constraints | F16 KV UB=256 (current, 278) | Q8_0 KV previously tested; UB≥2048 Vulkan crash |
 | Thinking mode | All models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
@@ -984,11 +984,7 @@ approvals:
 HERMES_STREAM_READ_TIMEOUT=3600
 HERMES_STREAM_STALE_TIMEOUT=7200
 
-# QQ Bot integration
-QQ_APP_ID={your_qq_app_id}
-QQ_CLIENT_SECRET={your_qq_client_secret}
-QQ_ALLOW_ALL_USERS=false
-QQ_ALLOWED_USERS=               # Empty = all unauthorized users denied
+
 ```
 
 **Usage:**
@@ -1168,7 +1164,7 @@ Other MoE models (358, 35xb) with reasoning enabled have no checkpoint issues. O
 
 **Status:** Open — version locked at b9315; awaiting upstream fix
 
-**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). In this deployment: 27B Dense (278, currently using default Q8_0 KV — previously tested with `cache-type-k = q4_0` which would be affected if re-enabled; 276/274 deleted, same config). 35B MoE models (358/35xb) use F16 KV and are not affected.
+**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). Current deployment uses default F16 KV (no explicit `cache-type-k`/`cache-type-v` in INI), so this issue is **not currently triggered**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) were re-enabled on any model. 35B MoE models (358/35xb) have always used F16 KV and are not affected.
 
 **Symptom:** `vk::DeviceLostError` (`vk::Queue::submit: ErrorDeviceLost`) during MTP draft decode, causing llama-server slot process crash. Client sees HTTP 500 / "Failed to read connection".
 

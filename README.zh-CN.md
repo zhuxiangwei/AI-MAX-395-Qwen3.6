@@ -110,11 +110,11 @@ APEX 量化——最佳质量-速度平衡。混合精度 per tensor（关键层
 
 Dense 架构——每 token 激活全部 27B 参数。~13 t/s 生成速度。当前 Hermes 默认模型（质量最高）。
 
-**配置：Q8_0 KV + UB=256。**
+**配置：F16 KV + UB=256。**（默认 KV 类型，INI 中无显式 `cache-type-k`/`cache-type-v`）
 
-**已排除：** F16 KV（p256K 超时 >7200s）；Q8_0 KV（1.7~2× KV 空间 vs Q4_0，无显著 prefill 优势）；UB≥1024（长上下文退化）；UB≥2048（Vulkan 崩溃）。
+**已排除：** Q8_0 KV（1.7~2× KV 空间 vs Q4_0，无显著 prefill 优势）；Q4_0 KV（节省约 50% 空间且 prefill 持平，但当前未使用）；UB≥1024（长上下文退化）；UB≥2048（Vulkan 崩溃）。
 
-#### Q8_0 KV UB=256（当前配置）
+#### F16 KV UB=256（当前配置）
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
@@ -125,7 +125,7 @@ Dense 架构——每 token 激活全部 27B 参数。~13 t/s 生成速度。当
 | p128K | — | 80.2† | — |
 | p256K | — | 88.0† | ~2806s† |
 
-> † 当前配置（Q8_0 KV, UB=256, cache-reuse=256, max_cstate=1, governor=performance）下的初步测量。完整基准测试待补。
+> † 当前配置（F16 KV, UB=256, cache-reuse=256, max_cstate=1, governor=performance）下的初步测量。完整基准测试待补。
 >
 > **历史参考（Q8_0 KV UB=512，已弃用）：** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill；gen 7.3–13.8 t/s。
 
@@ -244,7 +244,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 不加 `--no-mmap` | 无收益，`--mmap`（默认）+ `--mlock` 是最佳组合 |
 | `-a Qwen3.6` | 设置 API 响应中的 model 字段；客户端需校验 model 字段时必须 |
 | alias 短名路由 | 无需符号链接；别名和文件名均可路由 |
-| 27B Dense: Q8_0 KV cache | 默认 KV cache 类型。Q4_0 此前测试节省约 50% 空间且 prefill 持平，但为稳定性已从 INI 中移除 |
+| 所有模型：F16 KV cache（默认） | INI 中无显式 `cache-type-k`/`cache-type-v`，llama-server 默认 F16。Q4_0 此前在 278 上测试节省约 50% 空间且 prefill 持平，但当前未使用 |
 | `cache-reuse` = 256（全模型） | KV cache shifting 深度 256 以实现跨轮上下文高效复用；减少多轮对话重复 prefill |
 | 系统: CPU governor=performance | 减少 GPU 命令提交延迟；改善 gen 速度和 TTFT 稳定性 |
 | 系统: `processor.max_cstate=1` | 阻止 CPU 进入深 C-state；减少 Vulkan 命令提交延迟尖峰 |
@@ -259,7 +259,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 所有模型: 最大上下文 | 256K (`ctx-size = 262144`) | 统一上下文覆盖所有 prompt 长度 |
 | 27B Dense: `parallel` | 仅 1 | `parallel ≥ 3` 触发 Vulkan bug（见已知问题） |
 | 35B MoE: UB 约束 | UB=512 ≤128K 最优；UB=256 256K 最优 | UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
-| 27B Dense: UB 约束 | Q8_0 KV UB=256（当前，278） | F16 KV p256K 超时；UB≥2048 Vulkan 崩溃 |
+| 27B Dense: UB 约束 | F16 KV UB=256（当前，278） | Q8_0 KV 此前测试过；UB≥2048 Vulkan 崩溃 |
 | Thinking 模式 | 所有模型：已开启（`reasoning-budget=8192`） | Budget 上限防止思考 token 失控增长；`reasoning=off` 会导致 checkpoint 恢复 bug（见已知问题）；客户端通过 `chat_template_kwargs.enable_thinking: false` 在请求层面控制 |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 并发 | 所有模型 parallel=1 | 单用户负载无需并发 slot；27B Dense parallel≥3 触发 Vulkan bug |
@@ -972,11 +972,7 @@ approvals:
 HERMES_STREAM_READ_TIMEOUT=3600
 HERMES_STREAM_STALE_TIMEOUT=7200
 
-# QQ Bot 集成
-QQ_APP_ID={your_qq_app_id}
-QQ_CLIENT_SECRET={your_qq_client_secret}
-QQ_ALLOW_ALL_USERS=false
-QQ_ALLOWED_USERS=               # 空 = 拒绝所有未授权用户
+
 ```
 
 **使用方式：**
@@ -1154,7 +1150,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **状态：** 未解决——版本锁定在 b9315；等待上游修复
 
-**受影响模型：** 所有启用 MTP speculative decoding + 量化 KV cache（`cache-type-k` / `cache-type-v`）的模型。本部署中：27B Dense（278，当前使用默认 Q8_0 KV——此前测试的 `cache-type-k = q4_0` 若重新启甩会受影响；276/274 已删除，使用相同配置）。35B MoE 模型（358/35xb）使用 F16 KV，不受影响。
+**受影响模型：** 所有启用 MTP speculative decoding + 量化 KV cache（`cache-type-k` / `cache-type-v`）的模型。当前部署使用默认 F16 KV（INI 中无显式 `cache-type-k`/`cache-type-v`），因此此问题**当前未触发**。仅当在任何模型上重新启用量化 KV（如 `q8_0`、`q4_0`）时才会出现。35B MoE 模型（358/35xb）一直使用 F16 KV，不受影响。
 
 **现象：** MTP draft decode 期间触发 `vk::DeviceLostError`（`vk::Queue::submit: ErrorDeviceLost`），llama-server slot 进程崩溃。客户端看到 HTTP 500 / "Failed to read connection"。
 

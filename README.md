@@ -14,7 +14,7 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 
 ### 35B-A3B MoE (UD-Q8_K_XL, alias `358`)
 
-**Primary model — fastest generation, stable at 256K.** MoE activates only 3B/35B params per token.
+**Auxiliary model — Hermes auxiliary tasks (vision, compression, etc.).** MoE activates only 3B/35B params per token. ~50 t/s generation with vision support.
 
 **Optimal config: F16 KV cache.** ≤128K → UB=512 (prefill +22~25%, TTFT -17~20% vs UB=256). 256K → UB=256 (elapsed -13% vs UB=512).
 
@@ -76,7 +76,7 @@ APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per 
 
 ### 35B-A3B MoE APEX I-Balanced (alias `35xb`, ~24 GB)
 
-APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor (critical layers Q6_K/Q5_K_M, middle expert layers Q4_K_M). ~24 GB overall (between Q5 and Q6 by size). KL max 4.53 — **lowest deviation among all quantizations** (even better than Q8's 9.72). imatrix calibration reduces worst-case deviation by 68%.
+APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor (critical layers Q6_K/Q5_K_M, middle expert layers Q4_K_M). ~24 GB overall (between Q5 and Q6 by size). KL max 4.53 — **lowest deviation among all quantizations** (even better than Q8's 9.72). imatrix calibration reduces worst-case deviation by 68%. **Not registered in Hermes** — served by llama-server for manual API switch only.
 
 **Optimal config: F16 KV cache, UB=512.** UB=512 is the best overall choice for ≤128K (prefill +22~25% vs UB=256). UB≥1024 degrades at ≥128K (p256K prefill -34% vs UB=512).
 
@@ -104,17 +104,17 @@ APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor
 
 > APEX I-Balanced gen speed **~40% faster** than UD-Q8. Quality leader: KL max 4.53 is the best among all quantizations.
 >
-> **Config updates since these benchmarks** (2026-06-06): `spec-draft-n-max` 3→2 (+5~12% gen speed), `cache-reuse=256` (improves multi-turn), `max_cstate=1` + `governor=performance` (system-level latency reduction). These changes improve gen speed and TTFT but the UB=512 table above was measured before these updates — actual performance with current config is expected to be better.
+> **Config updates since these benchmarks** (2026-06-06): `spec-draft-n-max` 3→2 (+5~12% gen speed), `ubatch-size` 512→256 (stability at long contexts), `cache-reuse=256` (improves multi-turn), `max_cstate=1` + `governor=performance` (system-level latency reduction). These changes improve gen speed and TTFT but the UB=512 table above was measured before these updates — actual performance with current config is expected to be different.
 
 ### 27B Dense Q8 (Q8_K_XL, alias `278`)
 
-Dense model — all 27B params active per token. Q4_0 KV cache saves ~50% KV space vs Q8_0 with comparable prefill performance, enabling longer effective context within the same VRAM budget.
+Dense model — all 27B params active per token. ~13 t/s generation. Current Hermes default model (highest quality).
 
-**Optimal config: Q4_0 KV + UB=512.**
+**Config: Q8_0 KV + UB=256.**
 
 **Ruled out:** F16 KV (p256K timeout >7200s); Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); UB≥1024 (long-context degradation); UB≥2048 (Vulkan crash).
 
-#### Q4_0 KV UB=512 (current config)
+#### Q8_0 KV UB=256 (current config)
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
@@ -125,7 +125,7 @@ Dense model — all 27B params active per token. Q4_0 KV cache saves ~50% KV spa
 | p128K | — | 80.2† | — |
 | p256K | — | 88.0† | ~2806s† |
 
-> † Preliminary measurements under current config (Q4_0 KV, UB=512, cache-reuse=256, max_cstate=1, governor=performance). Full benchmark pending. Q4_0 KV vs Q8_0 KV at matched token counts: ~56K prefill -7% (181 vs 195 t/s), ~245K prefill +6% (88 vs 83 t/s) — net parity with ~50% KV cache space savings.
+> † Preliminary measurements under current config (Q8_0 KV, UB=256, cache-reuse=256, max_cstate=1, governor=performance). Full benchmark pending.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 
@@ -232,8 +232,8 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 |----------|-----------|
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
 | Unified parallel=1, ctx=262144 | Simplifies config; one model per slot is sufficient for single-user workloads; dual-model via `--models-max 2`; 256K context covers all prompt lengths |
-| Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024). Current deployment: unified UB=512 for all models (best overall tradeoff) |
-| `--cache-ram -1` (unlimited) | Single-model rotation mode: only one model in memory at a time, `-1` allows prompt cache to grow without bound, maximizing KV cache hit rate. Previously dual-model resident mode used default 8192 MiB to prevent one model from starving another (see Known Issues) |
+| Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024). Current deployment: unified UB=256 for all models (stability-optimized after testing showed UB=512/1024 degradation at long contexts) |
+| `--cache-ram 0` | Single-model rotation mode: `0` disables prompt cache. Previously `--cache-ram -1` (unlimited) but caused prompt cache accumulation without benefit in current single-user workload. Dual-model resident mode used default 8192 MiB to prevent one model from starving another (see Known Issues) |
 | `--reasoning-budget 8192` | Prevents thinking tokens from exhausting KV cache/VRAM; no performance cost (main models only) |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
@@ -244,7 +244,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
-| 27B Dense: Q4_0 KV cache | Saves ~50% KV cache space vs Q8_0 with comparable prefill performance (-7% short context, +6% long context). Enables longer effective context within same VRAM budget |
+| 27B Dense: Q8_0 KV cache | Default KV cache type. Q4_0 KV was previously tested (saves ~50% space, comparable prefill) but removed from current INI for stability |
 | `cache-reuse` = 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; improves multi-turn performance by reducing re-prefill |
 | System: CPU governor=performance | Reduces GPU command submission latency; improves gen speed and TTFT stability |
 | System: `processor.max_cstate=1` | Prevents CPU deep C-states; reduces Vulkan command submission latency spikes |
@@ -258,12 +258,12 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | All models: concurrent slots | 1 (`parallel = 1`) | Single-user workload; `parallel > 1` wastes KV cache memory |
 | All models: max context | 256K (`ctx-size = 262144`) | Unified context covers all prompt lengths |
 | 27B Dense: `parallel` | 1 only | `parallel ≥ 3` triggers Vulkan bug (see Known Issues) |
-| 35B MoE: UB constraints | UB=512 (current, optimal overall) | UB≥1024 degrades at ≥128K (p256K prefill -34%); UB≥2048 Vulkan crash |
-| 27B Dense: UB constraints | Q4_0 KV UB=512 (current, 278) | F16 KV p256K timeout; UB≥2048 Vulkan crash |
+| 35B MoE: UB constraints | UB=256 (current, stability-optimized) | UB≥1024 degrades at ≥128K (p256K prefill -34%); UB≥2048 Vulkan crash |
+| 27B Dense: UB constraints | Q8_0 KV UB=256 (current, 278) | F16 KV p256K timeout; UB≥2048 Vulkan crash |
 | Thinking mode | All models: enabled (`reasoning-budget=8192`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
-| `--cache-ram` | `-1` (unlimited, set in service) | Single-model rotation: `-1` maximizes KV cache hit rate; dual-model mode must use default 8192 MiB to prevent contention (see Known Issues) |
+| `--cache-ram` | `0` (disabled, set in service) | Prompt cache disabled; `--cache-ram -1` caused unbounded cache growth without proportional benefit; dual-model mode must use default 8192 MiB to prevent contention (see Known Issues) |
 | `cache-reuse` | 256 (all models) | KV cache shifting at depth 256 for efficient context reuse across turns; improves multi-turn performance |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
@@ -395,103 +395,93 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 
 | Alias | File | Source | Quant | Arch | Size | Active Params | Role |
 |-------|------|--------|-------|------|------|---------------|------|
-| **35xb** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Auxiliary (vision, compression, etc.) |
-| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | **Primary** (main conversations, vision) |
+| **35xb** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Hermes-unregistered (llama-server serves, manual switch) |
+| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Auxiliary (Hermes auxiliary tasks, vision) |
 | **35xq** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Deleted (file removed) |
-| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Standby (manual switch) |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Primary (Hermes default + fallback) |
 | **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Deleted (file removed) |
 | **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Deleted (file removed) |
 
 > **Alias naming convention:** `35b` is reserved for the Qwen3.6-35B-A3B architecture family. APEX variants use `35xq` (I-Quality) and `35xb` (I-Balanced). UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
 >
 > **Deployment modes:**
-> - **Single-model rotation**: `models-max 1` → one model at a time, LRU switching on request (30–60s cold load), with `--slot-save-path` KV checkpoint save/restore. GTT 120GB + mlock=1 + cache-ram=-1 maximizes KV cache hit rate. No `--sleep-idle-seconds`.
+> - **Single-model rotation**: `models-max 1` → one model at a time, LRU switching on request (30–60s cold load), with `--slot-save-path` KV checkpoint save/restore. GTT 120GB + mlock=1 + cache-ram=0. No `--sleep-idle-seconds`.
 >
 > **Deleted models (2026-06-04):** 35xq (21.9 GB), 276 (25 GB), 274 (17 GB) removed to reclaim ~62.8 GB. Benchmark data and test scripts preserved in git for reference.
 
 ### 1. Cloud Nginx Configuration
 
-**File:** `/etc/nginx/sites-available/default`
+**File:** `/etc/nginx/sites-enabled/default` (LLM-relevant sections)
+
+#### nginx.conf key settings
 
 ```nginx
-# Rate limiting zone (shared by LLM API)
+server_tokens off;          # Hide Nginx version
+gzip off;                   # Global gzip off; per-location control
+
+# Rate limiting (in http block)
 limit_req_zone $binary_remote_addr zone=api:10m rate=60r/m;
+```
 
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name {your_domain};
-    client_max_body_size 10m;
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
+#### LLM-related locations
 
+```nginx
 server {
     listen 443 ssl default_server;
-    listen [::]:443 ssl default_server;
+    client_max_body_size 64m;   # Support large prompt requests
+    server_tokens off;
 
-    server_name {your_domain};
-    client_max_body_size 10m;
-
-    # SSL
-    ssl_certificate /etc/ssl/{your_domain}/{your_domain}.pem;
-    ssl_certificate_key /etc/ssl/{your_domain}/{your_domain}.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    root /var/www/html;
-    index index.html;
-
-    # ====== LLM Inference API (OpenAI-compatible) — SSH tunnel port 8080 → llama-server ======
-
-    # /v1/props — Hermes capability probe, not implemented by llama-server
+    # /v1/props — Hermes capability probe; not implemented by llama-server
     location = /v1/props {
         access_log off;
         default_type application/json;
         return 200 '{}';
     }
 
+    # LLM Inference API (OpenAI-compatible) — SSH tunnel port 8080 → llama-server
     location /v1/ {
+        proxy_pass http://127.0.0.1:8080;
         limit_req zone=api burst=20 nodelay;
 
-        proxy_pass http://127.0.0.1:8080;      # SSH reverse tunnel → inference server
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Long timeout (LLM inference is slow; Nginx ≥ downstream llama-server --timeout 3600)
+        # Long timeout (Nginx ≥ llama-server --timeout 3600)
         proxy_read_timeout 3600s;
         proxy_connect_timeout 60s;
         proxy_send_timeout 3600s;
 
-        # SSE streaming support
+        # SSE streaming
         proxy_set_header Connection '';
         proxy_buffering off;
         proxy_cache off;
-        gzip off;
+        gzip off;              # SSE requires gzip off
     }
 
     # Health check
     location /health {
+        limit_req zone=api burst=20 nodelay;
         access_log off;
         return 200 "OK\n";
         add_header Content-Type text/plain;
-    }
-
-    location / {
-        try_files $uri $uri/ =404;
     }
 }
 ```
 
 **Configuration notes:**
-- **`/v1/`** — OpenAI-compatible API proxy to `127.0.0.1:8080` (SSH reverse tunnel from inference server)
-- `/v1/props` returns empty JSON `{}` to avoid 404 noise from Hermes capability probes (llama-server doesn't implement this endpoint)
-- `limit_req_zone 60r/m burst=20` — supports auxiliary tasks (compression, vision, etc.) that generate burst requests
+- **`/v1/`** — OpenAI-compatible API proxy to `127.0.0.1:8080` (SSH reverse tunnel → inference server)
+- `/v1/props` returns `{}` to avoid 404 noise from Hermes capability probes
+- `limit_req_zone 60r/m burst=20` — all locations share the same rate limiter
+- `server_tokens off` — double-enforced (nginx.conf + server block)
+- `client_max_body_size 64m` — supports 100K+ token long prompts
+- Global `gzip off`; `/v1/` explicitly `gzip off` (SSE requirement)
 - All timeouts aligned: Nginx 3600s ↔ llama-server 3600s ↔ Hermes 3600s
 
 **Apply:** `sudo nginx -t && sudo systemctl reload nginx`
@@ -694,14 +684,14 @@ systemctl --user enable --now gpu-temp-log.timer
 
 ```ini
 
-[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]       # alias: 35xb — auxiliary model (vision, compression, etc.)
+[Qwen3.6-35B-A3B-APEX-MTP-I-Balanced]       # alias: 35xb — Hermes-unregistered (manual switch only)
 cache-reuse = 256
 n-gpu-layers = 99
 flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 512
+ubatch-size = 256
 spec-type = draft-mtp
 spec-draft-n-max = 2
 mmproj = /home/zxw/mmproj/mmproj-F16.gguf
@@ -718,7 +708,7 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 512
+ubatch-size = 256
 spec-type = draft-mtp
 spec-draft-n-max = 2
 mmproj = /home/zxw/mmproj/mmproj-F16.gguf
@@ -735,9 +725,7 @@ flash-attn = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
-ubatch-size = 512
-cache-type-k = q4_0
-cache-type-v = q4_0
+ubatch-size = 256
 spec-type = draft-mtp
 spec-draft-n-max = 2
 mlock = 1
@@ -770,11 +758,12 @@ ExecStart=/home/$USER/llama/llama.cpp/build/bin/llama-server \
     --models-max 1 \
     --models-preset /home/$USER/model/router-preset.ini \
     --slot-save-path /home/$USER/kv-checkpoints \
-    --cache-ram -1 \
+    --cache-ram 0 \
     --timeout 3600 \
     --metrics
 Restart=on-failure
 RestartSec=10
+TimeoutStartSec=300
 WorkingDirectory=/home/$USER
 LimitMEMLOCK=infinity
 
@@ -789,7 +778,7 @@ systemctl --user start llm-router
 loginctl enable-linger   # survive logout
 ```
 
-> Single-model rotation: `--models-max 1` + `--slot-save-path` KV checkpoint save/restore + `--cache-ram -1` unlimited prompt cache. Model switch latency 30–60s (cold load + slot restore). `--timeout 3600` covers worst-case 256K prefill on 278 (~3022s) with margin. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights.
+> Single-model rotation: `--models-max 1` + `--slot-save-path` KV checkpoint save/restore + `--cache-ram 0` (prompt cache disabled). Model switch latency 30–60s (cold load + slot restore). `--timeout 3600` covers worst-case 256K prefill on 278 (~3022s) with margin. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights. `TimeoutStartSec=300` prevents systemd from killing the service during long model loads.
 
 ### 8. Model Switching
 
@@ -799,7 +788,7 @@ Clients specify the `model` field in API requests. Both **alias short names** an
 # Using alias (recommended)
 curl https://{your_domain}/v1/chat/completions \
   -H "Authorization: Bearer {your_api_key}" \
-  -d '{"model": "358", ...}'   # primary model
+  -d '{"model": "278", ...}'   # primary model (Hermes default)
 
 # Using full filename (also works)
 curl https://{your_domain}/v1/chat/completions \
@@ -809,13 +798,12 @@ curl https://{your_domain}/v1/chat/completions \
 # Switch to auxiliary model (for vision, compression, etc.)
 curl https://{your_domain}/v1/chat/completions \
   -H "Authorization: Bearer {your_api_key}" \
-  -d '{"model": "35xb", ...}'
+  -d '{"model": "358", ...}'
 
-# Switch to standby model (for specific tasks)
+# Switch to unregistered model (manual API call only, not in Hermes)
 curl https://{your_domain}/v1/chat/completions \
   -H "Authorization: Bearer {your_api_key}" \
-  -d '{"model": "278", ...}'
-  -d '{"model": "Qwen3.6-35B-A3B-UD-Q8_K_XL", ...}'
+  -d '{"model": "35xb", ...}'
 ```
 
 ### Client Integration
@@ -841,25 +829,27 @@ providers:
       "278":
         context_length: 262144
         max_output_tokens: 32768
-      "35xb":
-        context_length: 262144
-        max_output_tokens: 32768
-        supports_vision: true
+        supports_vision: false   # 27B Dense has no mmproj
       "358":
         context_length: 262144
         max_output_tokens: 32768
-        supports_vision: true    # 358 has mmproj, primary model with vision
+        supports_vision: true    # 35B MoE with mmproj, handles vision tasks
+    # Note: 35xb (APEX I-Balanced) is NOT registered in Hermes — only served by llama-server for manual switch
     request_timeout_seconds: 3600  # API request timeout (aligned with llama-server --timeout)
     stale_timeout_seconds: 3600   # stream stale detection (must match request_timeout for long contexts)
 
 model:
-  default: "358"                   # primary model: 358 (Q8, vision, best generation quality)
+  default: "278"                   # primary model: 278 (27B Dense, highest quality, ~13 t/s)
   provider: "custom:local-llm"
   base_url: "https://{your_domain}/v1"
   extra_body:
     chat_template_kwargs:
       enable_thinking: true
 max_tokens: 32768                 # must ≥ reasoning-budget + expected output
+
+fallback_model:
+  provider: custom:local-llm
+  model: '278'                     # same as default; 358 available for manual switch
 
 agent:
   gateway_timeout: 3600           # gateway-level timeout (aligned with all other timeouts)
@@ -873,13 +863,12 @@ compression:
   target_ratio: 0.30             # keep 30% of threshold as recent tail
   protect_last_n: 20             # never compress the most recent 20 messages
 
-auxiliary:                         # all auxiliary tasks routed to 35xb (vision-capable, fast)
-                                  # 358 = primary model (main conversations)
-                                  # 35xb = auxiliary model (compression, vision, etc.)
-                                  # 278 = standby (manual switch for specific tasks)
+auxiliary:                         # all auxiliary tasks routed to 358 (vision-capable MoE, ~50 t/s)
+                                  # 278 = primary model (main conversations, highest quality)
+                                  # 358 = auxiliary model (compression, vision, etc.)
   vision:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
     base_url: "https://{your_domain}/v1"   # MUST be explicit - empty string causes RuntimeError
     timeout: 3600
     extra_body:
@@ -887,79 +876,106 @@ auxiliary:                         # all auxiliary tasks routed to 35xb (vision-
         enable_thinking: false
   web_extract:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   compression:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   skills_hub:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   approval:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   mcp:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   title_generation:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
   triage_specifier:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
-  kanban_decomposer:                # uses auto provider - falls back to default model 35xb
-    provider: auto
+  kanban_decomposer:
+    provider: custom:local-llm
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
   profile_describer:
     provider: custom:local-llm
-    model: 35xb
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
-  curator:                          # uses auto provider - falls back to default model 35xb
-    provider: auto
+  curator:
+    provider: custom:local-llm
+    model: '358'
+    base_url: "https://{your_domain}/v1"
     timeout: 3600
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+
+approvals:
+  mode: auto                        # routine ops pass; destructive actions require confirmation
+  timeout: 3600                     # CLI approval timeout
+  gateway_timeout: 3600             # Gateway (QQ Bot) approval timeout; defaults to 300s if unset
 
 **Configuration notes:**
 - `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
 - ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
 - `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
-- `supports_vision: true` on 358 and 35xb (both have mmproj); 278 (27B Dense) has no vision
+- `supports_vision: false` on 278 (27B Dense, no mmproj); `supports_vision: true` on 358 (35B MoE, has mmproj)
+- 35xb (APEX I-Balanced) is **not registered** in Hermes — still served by llama-server for manual API switch, but Hermes won't route to it
 - `max_tokens: 32768` — must be ≥ reasoning-budget (8192) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
 - `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
 - `stale_timeout_seconds: 3600` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
 - `gateway_timeout: 3600` — gateway-level timeout aligned with all other timeouts
-- `auxiliary` — all 11 tasks routed to 35xb (vision-capable APEX I-Balanced, lower latency than 358); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout; `kanban_decomposer` and `curator` use `provider: auto` (falls back to default model 358)
+- `auxiliary` — all 11 tasks routed to 358 (vision-capable MoE, ~50 t/s); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout
 - `auxiliary.vision.base_url` — ⚠️ **MUST be explicit** set to `https://{your_domain}/v1`. Empty string causes `resolve_vision_provider_client()` to skip the explicit branch, fall through to `_get_cached_client(is_vision=True)` → returns None → RuntimeError. Non-vision auxiliary tasks are safe with empty string (different code path). See Known Issues.
+- `approvals.mode: auto` — routine operations (file read, tool calls) pass automatically; only destructive actions (file deletion, dangerous commands) require manual confirmation. Use `manual` to require approval for everything (tedious for QQ Bot).
+- `approvals.timeout: 3600` — CLI approval max wait before auto-reject.
+- `approvals.gateway_timeout: 3600` — ⚠️ **Gateway (QQ Bot) approval timeout**. This field is separate from `timeout`; if unset, defaults to 300s (5 minutes). Users on messaging platforms often need more time to respond. Must be explicitly set to match the full-chain timeout.
 
 **Environment variable overrides** (`~/.hermes/.env`):
 
@@ -967,6 +983,12 @@ auxiliary:                         # all auxiliary tasks routed to 35xb (vision-
 # Override Hermes hardcoded defaults — prevent long-context timeout at 120s/180s
 HERMES_STREAM_READ_TIMEOUT=3600
 HERMES_STREAM_STALE_TIMEOUT=7200
+
+# QQ Bot integration
+QQ_APP_ID={your_qq_app_id}
+QQ_CLIENT_SECRET={your_qq_client_secret}
+QQ_ALLOW_ALL_USERS=false
+QQ_ALLOWED_USERS=               # Empty = all unauthorized users denied
 ```
 
 **Usage:**
@@ -974,7 +996,7 @@ HERMES_STREAM_STALE_TIMEOUT=7200
 wsl                                    # enter WSL
 hermes                                 # TUI mode (interactive)
 hermes -z 'quick question'             # oneshot mode
-hermes -z 'question' --model 35xb       # oneshot with specific model
+hermes -z 'question' --model 358       # oneshot with specific model
 ```
 
 **TUI commands:** `/model 358` switch model, `/skills` list skills, `/help` all commands, `Ctrl+C` interrupt, `Ctrl+D` or `/exit` quit.
@@ -1146,7 +1168,7 @@ Other MoE models (358, 35xb) with reasoning enabled have no checkpoint issues. O
 
 **Status:** Open — version locked at b9315; awaiting upstream fix
 
-**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). In this deployment: 27B Dense (278, with `cache-type-k = q8_0` + `cache-type-v = q8_0`; 276/274 deleted, same config).
+**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). In this deployment: 27B Dense (278, currently using default Q8_0 KV — previously tested with `cache-type-k = q4_0` which would be affected if re-enabled; 276/274 deleted, same config). 35B MoE models (358/35xb) use F16 KV and are not affected.
 
 **Symptom:** `vk::DeviceLostError` (`vk::Queue::submit: ErrorDeviceLost`) during MTP draft decode, causing llama-server slot process crash. Client sees HTTP 500 / "Failed to read connection".
 
@@ -1184,7 +1206,7 @@ spec-draft-n-max = 3
 
 ### `--cache-ram -1` Causes VRAM Contention and 35B Cold-Load Stall
 
-**Status:** Fixed — switched to single-model rotation mode (`models-max 1`), `--cache-ram -1` re-enabled
+**Status:** Mitigated — prompt cache disabled (`--cache-ram 0`) in current service config
 
 **Affected scenario:** Dual-model resident mode (`models-max 2`) with one model already loaded and serving long-context requests. **This scenario is obsolete — current deployment uses single-model rotation (models-max 1).**
 
@@ -1204,12 +1226,13 @@ spec-draft-n-max = 3
 - After removing `-1`: dual-model loading complete in ~14 seconds, swap usage dropped from 10 GiB to 256 KiB
 
 **Fix:**
-- Switch to single-model rotation mode (`--models-max 1`), only one model in memory at a time, `--cache-ram -1` no longer causes VRAM contention
+- Switch to single-model rotation mode (`--models-max 1`), only one model in memory at a time
+- Prompt cache disabled (`--cache-ram 0`) to prevent unbounded cache accumulation
 - Combined with `--slot-save-path` KV checkpoint save/restore, model switch latency is 30–60 seconds
 - GTT 120GB + mlock=1 ensures model weights stay in physical memory
 - **Do not** use `--cache-ram -1` in dual-model resident mode (`models-max 2`)
 
-**Warning:** `--cache-ram -1` is only safe in single-model rotation mode. In dual-model resident mode (`models-max 2`), with only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load.
+**Warning:** `--cache-ram -1` is only safe in single-model rotation mode with controlled workloads. In dual-model resident mode (`models-max 2`), with only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load. Current deployment uses `--cache-ram 0` (disabled) for stability.
 
 ---
 
@@ -1261,4 +1284,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-07 (primary model 358+vision, auxiliary 35xb, 278 standby, Nginx inference-only config, link latency ref)*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9315 Vulkan · 2026-06-03 · Updated 2026-06-08 (primary 278, auxiliary 358, 35xb Hermes-unregistered; Nginx: server_tokens off, global gzip off, per-location control, 64m body, rate-limit 60r/m; Hermes: approvals.gateway_timeout 3600, cache-ram 0, ubatch 256)*

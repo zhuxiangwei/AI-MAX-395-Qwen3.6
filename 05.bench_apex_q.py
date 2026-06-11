@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """05.bench_apex_q.py — APEX I-Quality (21.9GB, Q6_K) full benchmark.
 
+⚠ ARCHIVED: Model file removed (2026-06-04). This script is preserved for
+reference only. Do not run — model file no longer exists on server.
+
 Tests APEX I-Quality at p128/p4K/p32K/p64K/p128K/p256K.
 F16 KV UB=256 (baseline) + UB=512.
 

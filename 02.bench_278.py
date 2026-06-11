@@ -18,7 +18,7 @@ MODEL_PATH = os.path.join(_BASE_DIR, "model/Qwen3.6-27B-UD-Q8_K_XL.gguf")
 API_KEY = os.environ.get("LLM_API_KEY", "")
 ALIAS = "278"
 
-CONFIGS = [("q8_0", [512])]
+CONFIGS = [("f16", [512])]
 
 TEST_POINTS = [
     ("p128", 128), ("p4K", 4096), ("p32K", 32768),
@@ -76,7 +76,6 @@ def main():
             server = benchlib.LlamaServer(
                 model_path=MODEL_PATH, alias=ALIAS, base_dir=_BASE_DIR,
                 api_key=API_KEY, ubatch=ub, cache_type_k=kv, cache_type_v=kv,
-                cache_reuse=256,
             )
 
             try:

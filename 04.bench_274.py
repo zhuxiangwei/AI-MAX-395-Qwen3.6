@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """04.bench_274.py — 27B Dense Q4 full benchmark.
 
+⚠ ARCHIVED: Model file removed (2026-06-04). This script is preserved for
+reference only. Do not run — model file no longer exists on server.
+
 Tests 274 at p128/p4K/p32K/p64K/p128K/p256K.
 Q8_0 KV UB=1024 (optimal config).
 

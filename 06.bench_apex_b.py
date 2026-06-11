@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """06.bench_apex_b.py — APEX I-Balanced (24.3GB, Q5_K_M/Q4_K_M mixed) full benchmark.
 
+⚠ ARCHIVED: Model file removed (2026-06-12). This script is preserved for
+reference only. Do not run — model file no longer exists on server.
+
 Tests APEX I-Balanced at p128/p4K/p32K/p64K/p128K/p256K.
 F16 KV UB=256 (baseline) + UB=512.
 

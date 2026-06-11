@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """03.bench_276.py — 27B Dense Q6 full benchmark.
 
+⚠ ARCHIVED: Model file removed (2026-06-04). This script is preserved for
+reference only. Do not run — model file no longer exists on server.
+
 Tests 276 at p128/p4K/p32K/p64K/p128K/p256K.
 Q8_0 KV UB=512 (optimal config).
 

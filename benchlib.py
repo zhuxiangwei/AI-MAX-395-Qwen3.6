@@ -26,7 +26,7 @@ CHARS_PER_TOKEN = 3.6
 DEFAULT_CTX = 262144  # parallel=1 × 262144 per slot
 DEFAULT_BATCH = 4096
 DEFAULT_THREADS = 8
-DEFAULT_REASONING_BUDGET = 8192
+DEFAULT_REASONING_BUDGET = 16384
 DEFAULT_SERVER_PORT = 12345
 DEFAULT_SERVER_READY_TIMEOUT = 180
 DEFAULT_REQUEST_TIMEOUT = 7200
@@ -205,7 +205,7 @@ class LlamaServer:
     """Minimal llama-server wrapper. start() calls wait_clean() first."""
 
     def __init__(self, model_path, alias, base_dir, api_key="",
-                 ubatch=256, cache_type_k="f16", cache_type_v="f16",
+                 ubatch=512, cache_type_k="f16", cache_type_v="f16",
                  ctx=DEFAULT_CTX, batch=DEFAULT_BATCH, threads=DEFAULT_THREADS,
                  port=DEFAULT_SERVER_PORT, parallel=1,
                  mmproj_path=None, cache_reuse=None,
@@ -243,12 +243,14 @@ class LlamaServer:
             "--flash-attn", "on",
             "--parallel", str(self.parallel),
             "--spec-type", "draft-mtp",
-            "--spec-draft-n-max", "3",
+            "--spec-draft-n-max", "2",
             "--mlock",
             "--numa", "distribute",
             "--reasoning-budget", str(DEFAULT_REASONING_BUDGET),
             "--cache-type-k", self.cache_type_k,
             "--cache-type-v", self.cache_type_v,
+            "--kv-unified",
+            "--cache-ram", "32768",
             "--host", "127.0.0.1",
             "--port", str(self.port),
             "--api-key", self.api_key,

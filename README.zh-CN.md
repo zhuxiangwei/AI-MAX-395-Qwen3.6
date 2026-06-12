@@ -110,24 +110,24 @@ APEX 量化——最佳质量-速度平衡。混合精度 per tensor（关键层
 
 ### 27B Dense Q8 (Q8_K_XL, 别名 `278`)
 
-Dense 架构——每 token 激活全部 27B 参数。~13 t/s 生成速度。当前 Hermes 默认模型（质量最高）。
+Dense 架构——每 token 激活全部 27B 参数。当前 Hermes 默认模型。
 
-**配置：F16 KV + UB=512 + kv-unified=1。**（默认 KV 类型，INI 中无显式 `cache-type-k`/`cache-type-v`）
+**配置：F16 KV + UB=256 + kv-unified=1 + cache-ram=16384 + slot-prompt-similarity=0.8。**
 
-**已排除：** Q8_0 KV（1.7~2× KV 空间 vs Q4_0，无显著 prefill 优势）；Q4_0 KV（节省约 50% 空间且 prefill 持平，但当前未使用）；UB≥1024（长上下文退化）；UB≥2048（Vulkan 崩溃）。
+**已排除：** Q8_0 KV（1.7~2× KV 空间 vs Q4_0，无显著 prefill 优势）；Q4_0 KV（Vulkan 反量化开销抵消带宽节省）；UB≥1024（长上下文 prefill 退化 11–34%）；UB≥2048（Vulkan 崩溃）。
 
-#### F16 KV UB=512（当前配置）
+#### F16 KV UB=256（当前配置）
 
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | — | — | — |
-| p4K | — | — | — |
-| p32K | ~13† | 181.2† | ~189s† |
-| p64K | — | — | — |
-| p128K | — | 80.2† | — |
-| p256K | — | 88.0† | ~2806s† |
+| Prompt | Gen (t/s) | Prefill (t/s) | MTP 率 | 来源 |
+|--------|----------|--------------|--------|------|
+| ~1K | 10.9 | 53.0 | 0.80 | 生产日志† |
+| ~10K | 12.8 | 167.9 | 0.86 | 生产日志† |
+| ~16K | 13.0 | 225.5 | 0.84 | 生产日志† |
+| ~20K | 14.4 | 215.5 | 0.99 | 生产日志† |
+| ~65K | 10.7 | 117.3 | 0.74 | 生产日志† |
+| ~146K | 8.5 | 42.1 | 0.68 | 生产日志† |
 
-> † 当前配置下的初步测量（F16 KV, UB=256, kv-unified=1, cache-ram=16384, reasoning-budget=16384, slot-prompt-similarity=0.8, max_cstate=1, governor=performance）。完整基准待补。
+> † 生产负载日志数据（F16 KV, UB=512, cache-ram=32768, 约 186 个请求，已排除 checkpoint-restore 命中）。UB=256 配置数据待补。MTP 率在 50K+ 上下文显著下降。Gen 速度在短/中上下文稳定 10–14 t/s，146K+ 降至 ~8.5 t/s。
 >
 > **历史参考（Q8_0 KV UB=512，已弃用）：** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill；gen 7.3–13.8 t/s。
 
@@ -234,7 +234,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 |------|------|
 | Service = 服务级，INI = 模型级 | 层次清晰，改模型参数不碰 service 文件 |
 | 统一 parallel=1, ctx=262144 | 简化配置；单用户负载无需并发 slot；双模型通过 `--models-max 2` 实现；256K 上下文覆盖所有 prompt 长度 |
-| 按量化等级差异化 ub | 量化越高权重越大，VRAM 余量越小，需更小 ub 保证稳定性；最优 UB 因模型而异（256–1024）。当前部署：278 使用 UB=512，358 使用 UB=256（278 UB=512 导致不稳定；358 切换到 UB=256 保证全上下文长度稳定性） |
+| 统一 UB=256 | 全模型统一 ubatch=256，保证稳定性。此前 278 UB=512 导致不稳定（后改为 256）；UB≥1024 长上下文 prefill 退化；UB≥2048 Vulkan 崩溃 |
 | `cache-ram = 16384/4096`（INI 中每模型配置） | prompt cache 按模型角色配置：278=16 GB（主力，长对话），358=4 GB（辅助，短任务）。此前使用 `--cache-ram 0`（禁用），后改为 32768（32 GB，双模型下超出 GTT 预算）。67K 上下文约占 15.7 GB，16 GB 可覆盖典型长对话场景 |
 | `reasoning-budget = 16384`（INI 中每模型配置） | 防止思考 token 失控增长，同时允许更长推理链。此前 8192，已加倍以改善推理质量 |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）混入思考和回答，产生重复输出。不要添加 |
@@ -261,7 +261,7 @@ Dense 架构 Q4 量化——Dense 模型中最快生成速度。
 | 所有模型: 最大上下文 | 256K (`ctx-size = 262144`) | 统一上下文覆盖所有 prompt 长度 |
 | 27B Dense: `parallel` | 仅 1 | `parallel ≥ 3` 触发 Vulkan bug（见已知问题） |
 | 35B MoE: UB 约束 | UB=256（当前，全上下文长度稳定） | 278 UB=512 导致不稳定；358 切换 UB=256 保证稳定性；UB≥1024 在 p256K 劣化；UB≥2048 Vulkan 崩溃 |
-| 27B Dense: UB 约束 | F16 KV UB=512（当前，278） | Q8_0 KV 此前测试过；UB≥2048 Vulkan 崩溃 |
+| 27B Dense: UB 约束 | UB=256（当前，与 358 统一） | UB=512 此前不稳定，已统一为 256；UB≥1024 长上下文退化；UB≥2048 Vulkan 崩溃 |
 | Thinking 模式 | 所有模型：已开启（`reasoning-budget=16384`） | Budget 上限防止思考 token 失控增长；`reasoning=off` 会导致 checkpoint 恢复 bug（见已知问题）；客户端通过 `chat_template_kwargs.enable_thinking: false` 在请求层面控制 |
 | 不使用 `reasoning-format = none` | 该参数会将 thinking 内容放入 `delta.content` 而非 `delta.reasoning_content`，导致 SSE 客户端（如 OpenClaw/QClaw）将 thinking 与正式回答混合，引发重复输出。不要添加。 |
 | 并发 | 所有模型 parallel=1 | 单用户负载无需并发 slot；27B Dense parallel≥3 触发 Vulkan bug |
@@ -821,7 +821,6 @@ providers:
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true    # 35B MoE 配置 mmproj，处理视觉任务
-    # 注意：35xb（APEX I-Balanced）已删除（2026-06-12）
     request_timeout_seconds: 3600  # API 请求超时（与 llama-server --timeout 对齐）
     stale_timeout_seconds: 3600   # 流式停滞检测（必须与 request_timeout 对齐以支持长上下文）
 
@@ -954,7 +953,6 @@ approvals:
 - ⚠️ **providers 键必须包含 `custom:` 前缀** — 即 `custom:local-llm`，而非 `local-llm`。若键名与 `model.provider` 不匹配，Hermes 的 `get_provider_request_timeout()` 返回 `None` → 回退到硬编码 `HERMES_STREAM_READ_TIMEOUT = 120s`，导致长上下文请求必定超时。这是级联超时事故的根因（参见已知问题）
 - `key_env: "DASHENZHIYAN_API_KEY"` — 需在 `~/.hermes/.env` 中设置
 - `supports_vision: false` 在 278（27B Dense 无 mmproj）；`supports_vision: true` 在 358（35B MoE 配置 mmproj）
-- 35xb（APEX I-Balanced）已删除（2026-06-12）— 不再在 Hermes 或 llama-server 中注册
 - `max_tokens: 32768` — 必须 ≥ reasoning-budget (16384) + 预期输出；8192 不够
 - `chat_template_kwargs: enable_thinking: true` — 启用思考模式；省略或设 `false` 关闭
 - `context_length` 是每 slot 上下文（ctx-size ÷ parallel），不是总 ctx-size
@@ -1007,10 +1005,9 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、webcha
 - [ ] `llm-tunnel.service` 已创建并 **运行中**
 - [ ] 云端 `ss -tlnp | grep 8080` 确认隧道监听
 - [ ] `llm-router.service` 已创建并 **运行中**（仅服务级参数）
-- [ ] `~/model/router-preset.ini` 配置正确（活跃模型参数 + alias：278/358；35xb/35xq/276/274 已删除）
+- [ ] `~/model/router-preset.ini` 配置正确（活跃模型参数 + alias：278/358）
 - [ ] 云端：`curl http://127.0.0.1:8080/v1/models` 返回模型 + aliases
 - [ ] 双模型常驻模式：启动后 278 和 358 均 status `loaded`，各自独立 slot
-- [ ] 单模型模式（QClaw）：模型通过 LRU 按请求切换（冷加载 8–17 秒）
 - [ ] 服务配置不含 `--sleep-idle-seconds`（防止重载循环导致 OOM）
 - [ ] 外网：`curl https://{your_domain}/health` 返回 `OK`
 - [ ] GPU 温度监控：`systemctl --user status gpu-temp-log.timer` 处于 active 状态
@@ -1102,7 +1099,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **状态：** 已解决——从服务配置中移除 `--sleep-idle-seconds`
 
-**受影响场景：** 旧版双模型常驻模式（`models-max 2`）下，多个模型共存 + `--sleep-idle-seconds` 触发空闲卸载→重载循环，导致内存尖峰 OOM。**此场景已废弃——当前使用单模型轮换模式（models-max 1），且已删除多余模型（274, 35xb 等），仅有 278 和 358 两个模型。**
+**受影响场景：** 旧版双模型常驻模式（`models-max 2`）下，多个模型共存 + `--sleep-idle-seconds` 触发空闲卸载→重载循环，导致内存尖峰 OOM。**此场景已废弃——当前使用双模型常驻模式（`models-max 2`）且不配置 `--sleep-idle-seconds`，仅有 278 和 358 两个模型。**
 
 **现象：** 运行数小时后 Linux OOM killer 终止 `llama-server`。
 

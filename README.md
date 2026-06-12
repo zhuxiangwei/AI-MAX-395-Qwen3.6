@@ -110,24 +110,24 @@ APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor
 
 ### 27B Dense Q8 (Q8_K_XL, alias `278`)
 
-Dense model — all 27B params active per token. ~13 t/s generation. Current Hermes default model (highest quality).
+Dense model — all 27B params active per token. Current Hermes default model.
 
-**Config: F16 KV + UB=512 + kv-unified=1.** (default KV type, no explicit `cache-type-k`/`cache-type-v` in INI)
+**Config: F16 KV + UB=256 + kv-unified=1 + cache-ram=16384 + slot-prompt-similarity=0.8.**
 
-**Ruled out:** Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); Q4_0 KV (saves ~50% space, comparable performance, but not currently used); UB≥1024 (long-context degradation); UB≥2048 (Vulkan crash).
+**Ruled out:** Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); Q4_0 KV (Vulkan dequantization overhead negates bandwidth savings); UB≥1024 (long-context prefill degradation 11–34%); UB≥2048 (Vulkan crash).
 
-#### F16 KV UB=512 (current config)
+#### F16 KV UB=256 (current config)
 
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | — | — | — |
-| p4K | — | — | — |
-| p32K | ~13† | 181.2† | ~189s† |
-| p64K | — | — | — |
-| p128K | — | 80.2† | — |
-| p256K | — | 88.0† | ~2806s† |
+| Prompt | Gen (t/s) | Prefill (t/s) | MTP Rate | Source |
+|--------|----------|--------------|----------|--------|
+| ~1K | 10.9 | 53.0 | 0.80 | Prod log† |
+| ~10K | 12.8 | 167.9 | 0.86 | Prod log† |
+| ~16K | 13.0 | 225.5 | 0.84 | Prod log† |
+| ~20K | 14.4 | 215.5 | 0.99 | Prod log† |
+| ~65K | 10.7 | 117.3 | 0.74 | Prod log† |
+| ~146K | 8.5 | 42.1 | 0.68 | Prod log† |
 
-> † Preliminary measurements under current config (F16 KV, UB=256, kv-unified=1, cache-ram=16384, reasoning-budget=16384, slot-prompt-similarity=0.8, max_cstate=1, governor=performance). Full benchmark pending.
+> † Production workload log data (F16 KV, UB=512, cache-ram=32768, ~186 requests, excluding checkpoint-restore hits). UB=256 config data pending. MTP rate declines significantly beyond 50K context. Gen speed stable at 10–14 t/s for short/medium context, drops to ~8.5 t/s at 146K+.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 
@@ -234,7 +234,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 |----------|-----------|
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
 | Unified parallel=1, ctx=262144 | Simplifies config; one model per slot is sufficient for single-user workloads; dual-model via `--models-max 2`; 256K context covers all prompt lengths |
-| Per-quant differentiated ub | Higher quant = larger weights = less VRAM headroom = smaller ub for stability; optimal UB varies by model (256–1024). Current deployment: both 278 and 358 use UB=256 for stability across all context lengths (278 UB=512 previously caused instability; both unified to UB=256) |
+| Unified UB=256 | All models use ubatch=256 for stability. 278 UB=512 previously caused instability; unified to UB=256. UB≥1024 causes long-context prefill degradation; UB≥2048 Vulkan crash |
 | `cache-ram = 16384/4096` (per-model in INI) | Prompt cache enabled per model: 278=16 GB (primary, long conversations), 358=4 GB (auxiliary, short tasks). Previously `--cache-ram 0` (disabled), then 32768 (32 GB, too large for dual-model GTT). 67K context uses ~15.7 GB, so 16 GB covers typical long conversations without exceeding GTT budget |
 | `reasoning-budget = 16384` (per-model in INI) | Prevents thinking tokens from exhausting KV cache/VRAM while allowing longer reasoning chains. Previously 8192, doubled for better reasoning quality |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
@@ -308,7 +308,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 - SSH reverse tunnel provides NAT traversal (home network → cloud)
 - OpenAI-compatible API endpoint at `https://{your_domain}/v1/`
 - **Router Mode** with per-model preset INI — automatic LRU model switching
-- **Alias short names** (358/278/35xb) for convenient model selection
+- **Alias short names** (278/358) for convenient model selection
 
 ### Hardware
 
@@ -823,7 +823,6 @@ providers:
         context_length: 262144
         max_output_tokens: 32768
         supports_vision: true    # 35B MoE with mmproj, handles vision tasks
-    # Note: 35xb (APEX I-Balanced) is NOT registered in Hermes — only served by llama-server for manual switch
     request_timeout_seconds: 3600  # API request timeout (aligned with llama-server --timeout)
     stale_timeout_seconds: 3600   # stream stale detection (must match request_timeout for long contexts)
 
@@ -955,7 +954,6 @@ approvals:
 - ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
 - `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
 - `supports_vision: false` on 278 (27B Dense, no mmproj); `supports_vision: true` on 358 (35B MoE, has mmproj)
-- 35xb (APEX I-Balanced) is **not registered** in Hermes — model file removed (2026-06-12). Previously served by llama-server for manual API switch
 - `max_tokens: 32768` — must be ≥ reasoning-budget (16384) + expected output; 8192 is too small
 - `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
 - `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
@@ -1010,10 +1008,9 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] `llm-tunnel.service` created and **active**
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
 - [ ] `llm-router.service` created and **active** (server-level params only)
-- [ ] `~/model/router-preset.ini` configured with all-model params + aliases (278/358; 35xb/35xq/276/274 deleted)
+- [ ] `~/model/router-preset.ini` configured with per-model params + aliases (278/358 only)
 - [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
 - [ ] Dual-model mode: both 278 and 358 loaded with independent slots
-- [ ] Single-model mode (QClaw): model switches via LRU on client request (8–17s cold load)
 - [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
 - [ ] GPU temperature monitoring: `systemctl --user status gpu-temp-log.timer` active
@@ -1105,7 +1102,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Resolved — removed `--sleep-idle-seconds` from service config
 
-**Affected scenario:** Main model (27B Q8) + 35xq model in dual-model resident mode (`models-max 2`), with `--sleep-idle-seconds` configured. **This scenario is obsolete — current deployment uses single-model rotation (models-max 1).**
+**Affected scenario:** Main model (27B Q8) + 35xq model in dual-model resident mode (`models-max 2`), with `--sleep-idle-seconds` configured. **This scenario is obsolete — current deployment uses dual-model resident mode (`models-max 2`) without `--sleep-idle-seconds`.**
 
 **Symptom:** Linux OOM killer terminates `llama-server` after hours of operation.
 

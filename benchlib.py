@@ -25,8 +25,12 @@ import urllib.error
 CHARS_PER_TOKEN = 3.6
 DEFAULT_CTX = 262144  # parallel=1 × 262144 per slot
 DEFAULT_BATCH = 4096
+DEFAULT_UBATCH = 256  # both models unified at 256 for stability
 DEFAULT_THREADS = 8
 DEFAULT_REASONING_BUDGET = 16384
+DEFAULT_CACHE_RAM_278 = 16384
+DEFAULT_CACHE_RAM_358 = 4096
+DEFAULT_SLOT_PROMPT_SIMILARITY = 0.8
 DEFAULT_SERVER_PORT = 12345
 DEFAULT_SERVER_READY_TIMEOUT = 180
 DEFAULT_REQUEST_TIMEOUT = 7200
@@ -205,9 +209,10 @@ class LlamaServer:
     """Minimal llama-server wrapper. start() calls wait_clean() first."""
 
     def __init__(self, model_path, alias, base_dir, api_key="",
-                 ubatch=512, cache_type_k="f16", cache_type_v="f16",
+                 ubatch=DEFAULT_UBATCH, cache_type_k="f16", cache_type_v="f16",
                  ctx=DEFAULT_CTX, batch=DEFAULT_BATCH, threads=DEFAULT_THREADS,
                  port=DEFAULT_SERVER_PORT, parallel=1,
+                 cache_ram=None, slot_prompt_similarity=DEFAULT_SLOT_PROMPT_SIMILARITY,
                  mmproj_path=None, cache_reuse=None,
                  ready_timeout=DEFAULT_SERVER_READY_TIMEOUT):
         self.model_path = model_path
@@ -222,6 +227,8 @@ class LlamaServer:
         self.threads = threads
         self.port = port
         self.parallel = parallel
+        self.cache_ram = cache_ram
+        self.slot_prompt_similarity = slot_prompt_similarity
         self.mmproj_path = mmproj_path
         self.cache_reuse = cache_reuse
         self.ready_timeout = ready_timeout
@@ -250,7 +257,8 @@ class LlamaServer:
             "--cache-type-k", self.cache_type_k,
             "--cache-type-v", self.cache_type_v,
             "--kv-unified",
-            "--cache-ram", "32768",
+            "--cache-ram", str(self.cache_ram or DEFAULT_CACHE_RAM_278),
+            "--slot-prompt-similarity", str(self.slot_prompt_similarity),
             "--host", "127.0.0.1",
             "--port", str(self.port),
             "--api-key", self.api_key,

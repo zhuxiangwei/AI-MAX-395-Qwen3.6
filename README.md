@@ -355,10 +355,10 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880 processor.max_cs
 |-----------|-------------------|
 | Inference OS | Ubuntu 26.04 LTS |
 | Cloud OS | Ubuntu 24.04.4 LTS |
-| llama.cpp | b9592 (commit ac4cddeb0, Vulkan backend) |
+| llama.cpp | b9617 (commit e37abd6b5, Vulkan backend) |
 | Build options | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` |
 
-> ⚠️ **Version upgraded from b9315 to b9592 (2026-06-11).** Commit `6c4cbdc70` ("server: MTP layer kv-cache should respect draft type ctk") is still present in b9592, but the current deployment uses default F16 KV cache (no explicit `cache-type-k`/`cache-type-v` in INI), so this bug **does not trigger**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) is re-enabled. Do not enable quantized KV on the Vulkan backend until upstream fixes this.
+> ⚠️ **Version upgraded from b9315 → b9592 (2026-06-11) → b9617 (2026-06-13).** Notable changes: Vulkan contiguous buffer fast path (#23973), Vulkan memcpy pipeline barriers (#23770), server checkpoint pos_next fix (#24411), reasoning-budget WebUI precedence fix (#24517), router mode log cleanup (#24463). Commit `6c4cbdc70` ("server: MTP layer kv-cache should respect draft type ctk") is still present in b9592, but the current deployment uses default F16 KV cache (no explicit `cache-type-k`/`cache-type-v` in INI), so this bug **does not trigger**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) is re-enabled. Do not enable quantized KV on the Vulkan backend until upstream fixes this.
 | Vulkan runtime | 1.4.341 |
 | API protocol | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) |
 
@@ -1181,7 +1181,7 @@ spec-draft-n-max = 3
 
 **Root cause:** MTP draft KV cache with quantized types triggers a Vulkan driver bug in radv/amdgpu. Long-context scenarios (≥64K tokens) with high-frequency GPU submissions cause device context loss. The bug is in the interaction between quantized MTP KV cache and the Vulkan memory management — not in the commit's logic itself, but the commit exposes the latent bug.
 
-**Workaround:** Upgraded to b9592 (F16 KV does not trigger this bug). Do **not** enable quantized KV types until upstream addresses the Vulkan + quantized KV cache interaction.
+**Workaround:** Upgraded to b9617 (F16 KV does not trigger this bug). Do **not** enable quantized KV types until upstream addresses the Vulkan + quantized KV cache interaction.
 
 **Upstream tracking:** No issue filed yet. The regression is specific to Vulkan backend + MTP + quantized KV; other backends (CPU/CUDA/Metal) are unaffected.
 
@@ -1267,4 +1267,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9592 Vulkan · 2026-06-03 · Updated 2026-06-13 (both models ubatch=256; INI: kv-unified=1, cache-ram=16384/4096, reasoning-budget=16384, slot-prompt-similarity=0.8, sampling params; systemd: wrapper script + ExecStartPost checkpoint restore; models-max 2; Hermes: title_generation→278)*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9617 Vulkan · 2026-06-03 · Updated 2026-06-13 (both models ubatch=256; INI: kv-unified=1, cache-ram=16384/4096, reasoning-budget=16384, slot-prompt-similarity=0.8, sampling params; systemd: wrapper script + ExecStartPost checkpoint restore; models-max 2; Hermes: title_generation→278)*

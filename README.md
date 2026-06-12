@@ -82,7 +82,7 @@ APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor
 
 **Optimal config: F16 KV cache, UB=512.** UB=512 is the best overall choice for ≤128K (prefill +22~25% vs UB=256). UB≥1024 degrades at ≥128K (p256K prefill -34% vs UB=512).
 
-#### F16 KV UB=512 (current config)
+#### F16 KV UB=512 (historical benchmark)
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
@@ -127,7 +127,7 @@ Dense model — all 27B params active per token. Current Hermes default model.
 | ~65K | 10.7 | 117.3 | 0.74 | Prod log† |
 | ~146K | 8.5 | 42.1 | 0.68 | Prod log† |
 
-> † Production workload log data (F16 KV, UB=512, cache-ram=32768, ~186 requests, excluding checkpoint-restore hits). UB=256 config data pending. MTP rate declines significantly beyond 50K context. Gen speed stable at 10–14 t/s for short/medium context, drops to ~8.5 t/s at 146K+.
+> † Production workload log data (F16 KV, UB=256, cache-ram=16384, ~186 requests, excluding checkpoint-restore hits). MTP rate declines significantly beyond 50K context. Gen speed stable at 10–14 t/s for short/medium context, drops to ~8.5 t/s at 146K+.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 

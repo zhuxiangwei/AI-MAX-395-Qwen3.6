@@ -1102,7 +1102,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Resolved — removed `--sleep-idle-seconds` from service config
 
-**Affected scenario:** Main model (27B Q8) + 35xq model in dual-model resident mode (`models-max 2`), with `--sleep-idle-seconds` configured. **This scenario is obsolete — current deployment uses dual-model resident mode (`models-max 2`) without `--sleep-idle-seconds`.**
+**Affected scenario:** Main model (27B Q8) + auxiliary model in dual-model resident mode (`models-max 2`), with `--sleep-idle-seconds` configured. **This scenario is obsolete — current deployment uses dual-model resident mode (`models-max 2`) without `--sleep-idle-seconds`.**
 
 **Symptom:** Linux OOM killer terminates `llama-server` after hours of operation.
 
@@ -1113,7 +1113,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 4. 278 previously ran with `parallel = 2` (now fixed to `parallel = 1`) → large KV cache pre-allocation + prompt cache accumulation
 5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
 
-**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 274 and 35xb are actively requested by clients, both remain loaded indefinitely under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
+**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 278 and 358 are actively requested by clients, both remain loaded under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
 
 **Resolution:**
 - Removed `--sleep-idle-seconds` from service config
@@ -1191,7 +1191,7 @@ spec-draft-n-max = 3
 
 **Status:** Mitigated — prompt cache now per-model in INI (278 `cache-ram = 16384`, 358 `cache-ram = 4096`), no longer in service config. Dual-model mode with per-model limits prevents unbounded growth.
 
-**Affected scenario:** Dual-model resident mode (`models-max 2`) with one model already loaded and serving long-context requests. **This scenario is obsolete — current deployment uses single-model rotation (models-max 1).**
+**Affected scenario:** Dual-model resident mode (`models-max 2`) with one model already loaded and serving long-context requests. **Mitigated by per-model `cache-ram` limits in INI.**
 
 **Symptom:** When the 27B model runs first and accumulates a large prompt cache (~12.4 GB for 131K tokens), a subsequent request to a 35B model triggers a cold load that stalls for 20+ minutes in the "fitting params to device memory" phase. The server appears frozen.
 
@@ -1215,7 +1215,7 @@ spec-draft-n-max = 3
 - GTT 120GB + mlock=1 ensures model weights stay in physical memory
 - **Do not** use `--cache-ram -1` in dual-model resident mode (`models-max 2`)
 
-**Warning:** `--cache-ram -1` is only safe in single-model rotation mode with controlled workloads. In dual-model resident mode (`models-max 2`), with only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load. Current deployment uses `cache-ram = 32768` (32 GB per model in INI) for stability.
+**Warning:** `--cache-ram -1` is only safe in single-model rotation mode with controlled workloads. In dual-model resident mode (`models-max 2`), with only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load. Current deployment uses `cache-ram = 16384/4096` (per model in INI) for stability.
 
 ---
 

@@ -1114,7 +1114,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **解决方案：**
 - 从服务配置中移除 `--sleep-idle-seconds`（已实施）
-- 切换至单模型轮换模式（`models-max 1`），同一时刻仅一个模型在内存中
+- 切换至双模型常驻模式（`models-max 2`），278 和 358 可同时加载（router 模式独立 slot）
 - 删除多余模型文件（274/276/35xb/35xq 已全部删除）
 - 固定 `parallel = 1` 避免不必要的 KV cache 预分配
 
@@ -1203,9 +1203,9 @@ spec-draft-n-max = 3
 - 移除 `-1` 后：加载正常完成，swap 从 10 GiB 降至 256 KiB
 
 **当前缓解措施：**
-- 切换至单模型轮换模式（`--models-max 1`），同一时刻仅一个模型在内存中
+- 切换至双模型常驻模式（`--models-max 2`），278 和 358 同时加载
 - Prompt cache 在 INI 中每模型配置为固定上限（278 `cache-ram = 16384`，358 `cache-ram = 4096`），防止无限增长
-- 配合 `--slot-save-path` KV checkpoint 保存/恢复
+- 每模型 `--slot-save-path` KV checkpoint 保存/恢复
 - GTT 120GB + mlock=1 确保模型权重常驻物理内存
 - **切勿**使用 `--cache-ram -1`（无限制）
 

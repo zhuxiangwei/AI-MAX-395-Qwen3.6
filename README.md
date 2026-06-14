@@ -112,7 +112,7 @@ APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor
 
 Dense model — all 27B params active per token. Current Hermes default model.
 
-**Config: F16 KV + UB=256 + kv-unified=1 + cache-ram=32768 + slot-prompt-similarity=0.8.**
+**Config: F16 KV + UB=256 + kv-unified=1 + cache-ram=49152 + slot-prompt-similarity=0.8.**
 
 **Ruled out:** Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); Q4_0 KV (Vulkan dequantization overhead negates bandwidth savings); UB≥1024 (long-context prefill degradation 11–34%); UB≥2048 (Vulkan crash).
 
@@ -141,7 +141,7 @@ Dense model — all 27B params active per token. Current Hermes default model.
 | 60K–130K | 5 | 93 | 116 |
 | 130K+ | 3 | 45 | 45 |
 
-> † Production workload log data (F16 KV, UB=256, cache-ram=32768, llama.cpp b9625, 283 gen + 336 prefill tasks). Gen speed includes thinking tokens. Short/medium context: gen stable at 11–13 t/s; long context (5K+ decoded): 8–10 t/s. Prefill varies widely with cache-hit rate; 10K–30K benefits most from prompt cache reuse.
+> † Production workload log data (F16 KV, UB=256, cache-ram=49152, llama.cpp b9625, 283 gen + 336 prefill tasks). Gen speed includes thinking tokens. Short/medium context: gen stable at 11–13 t/s; long context (5K+ decoded): 8–10 t/s. Prefill varies widely with cache-hit rate; 10K–30K benefits most from prompt cache reuse.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 
@@ -247,13 +247,13 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Decision | Rationale |
 |----------|-----------|
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
-| Unified parallel=1, ctx=262144 | Simplifies config; one model per slot is sufficient for single-user workloads; dual-model via `--models-max 2`; 256K context covers all prompt lengths |
+| Unified parallel=1, ctx=262144 | Simplifies config; single-user workloads; single-model mode `--models-max 1`; 256K context covers all prompt lengths |
 | Unified UB=256 | All models use ubatch=256 for stability. 278 UB=512 previously caused instability; unified to UB=256. UB≥1024 causes long-context prefill degradation; UB≥2048 Vulkan crash |
-| `cache-ram = 16384/4096` (per-model in INI) | Prompt cache enabled per model: 278=16 GB (primary, long conversations), 358=4 GB (auxiliary, short tasks). Previously `--cache-ram 0` (disabled), then 32768 (32 GB, too large for dual-model GTT). 67K context uses ~15.7 GB, so 16 GB covers typical long conversations without exceeding GTT budget |
+| `cache-ram = 49152/65536` (per-model in INI) | Prompt cache enabled per model: 278=48 GB (primary, long conversations + single-model mode), 358=64 GB (auxiliary, configured for future use). Single-model mode (`models-max 1`) dedicates all GTT to one model, allowing larger cache-ram. Previously `16384/4096` in dual-model mode |
 | `reasoning-budget = 16384` (per-model in INI) | Prevents thinking tokens from exhausting KV cache/VRAM while allowing longer reasoning chains. Previously 8192, doubled for better reasoning quality |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
-| Service: `--models-max 2` | Dual-model resident: both 278 and 358 can be loaded simultaneously via router. Previously `models-max 1` (single-model rotation) used slot-save-path for checkpoint persistence; now dual-model with per-model cache-ram limits. Slot contention from earlier dual-model attempts was caused by the old non-router architecture; router mode provides independent slots per model |
+| Service: `--models-max 1` | Single-model mode: only 278 loaded (primary). 358 available for manual switch (8-17s cold load). Previously `models-max 2` (dual-model resident) caused GTT memory pressure; switched to single-model with larger per-model cache-ram (49152 for 278). Slot-save-path provides KV checkpoint persistence across switches |
 | 27B Dense: `parallel = 1` only | `parallel ≥ 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
 | `--spec-draft-n-max 2` | 3 is 20.6% slower than 2; 2 provides best speed/accuracy tradeoff with quantized KV cache |
 | `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
@@ -279,7 +279,7 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | Thinking mode | All models: enabled (`reasoning-budget=16384`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
 | Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
-| `cache-ram` | 278=`16384`, 358=`4096` (per-model in INI) | Prompt cache sized per model role: 278 (primary, 16 GB) covers ~67K context; 358 (auxiliary, 4 GB) for short tasks. Previously 32768 (32 GB) exceeded GTT budget under dual-model; `--cache-ram -1` caused unbounded growth (see Known Issues) |
+| `cache-ram` | 278=`49152`, 358=`65536` (per-model in INI) | Prompt cache sized per model role: 278 (primary, 48 GB) in single-model mode; 358 (auxiliary, 64 GB) for future dual-model. Previously `16384/4096` in dual-model mode; `--cache-ram -1` caused unbounded growth (see Known Issues) |
 | `kv-unified` | 1 (all models, set in INI) | Unified KV cache; required for Vulkan slot-save/restore; bypasses GGML_ASSERT crash on unified memory |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
@@ -399,7 +399,7 @@ cmake --build build -j$(nproc)
 
 ### Model Inventory
 
-Router Mode serves all models from `$HOME/model/`. Dual-model mode (`--models-max 2`): both 278 and 358 can be loaded simultaneously via router with independent slots. Each model has an **alias** for short-name routing.
+Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-max 1`): 278 loaded by default; 358 available for manual switch (8-17s cold load). Each model has an **alias** for short-name routing.
 
 **Model sources (HuggingFace):**
 
@@ -421,7 +421,7 @@ Router Mode serves all models from `$HOME/model/`. Dual-model mode (`--models-ma
 > **Alias naming convention:** `35b` is reserved for the Qwen3.6-35B-A3B architecture family. APEX variants use `35xq` (I-Quality) and `35xb` (I-Balanced). UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
 >
 > **Deployment modes:**
-> - **Dual-model resident**: `models-max 2` → both 278 and 358 loaded simultaneously via router (independent slots, no contention). Per-model `cache-ram` limits prevent GTT budget overflow. GTT 120GB + mlock=1. No `--sleep-idle-seconds`.
+> - **Single-model mode**: `models-max 1` → 278 loaded by default; 358 available for manual switch (8-17s cold load). Per-model `cache-ram` limits (278=49152, 358=65536) sized for single-model GTT budget. GTT 120GB + mlock=1. No `--sleep-idle-seconds`.
 >
 > **Deleted models:** 35xb (24 GB, removed 2026-06-12), 35xq (21.9 GB), 276 (25 GB), 274 (17 GB) removed to reclaim disk space. Benchmark data and test scripts preserved in git for reference.
 
@@ -710,7 +710,7 @@ batch-size = 4096
 ubatch-size = 256
 spec-type = draft-mtp
 spec-draft-n-max = 2
-cache-ram = 16384
+cache-ram = 49152
 slot-save-path = /home/zxw/kv-checkpoints/278/
 mlock = 1
 numa = distribute
@@ -724,7 +724,7 @@ min-p = 0.0
 slot-prompt-similarity = 0.8
 alias = 278
 
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]                # alias: 358 — auxiliary (Hermes auxiliary tasks, vision)
+[Qwen3.6-35B-A3B-UD-Q8_K_XL]                # alias: 358 — auxiliary (manual switch, vision-capable)
 n-gpu-layers = 99
 flash-attn = 1
 kv-unified = 1
@@ -736,7 +736,7 @@ mmproj = /home/zxw/mmproj/mmproj-F16.gguf
 image-min-tokens = 2048
 spec-type = draft-mtp
 spec-draft-n-max = 2
-cache-ram = 4096
+cache-ram = 65536
 slot-save-path = /home/zxw/kv-checkpoints/358/
 mlock = 1
 numa = distribute
@@ -786,7 +786,7 @@ systemctl --user start llama-router
 loginctl enable-linger   # survive logout
 ```
 
-> The service uses a wrapper script (`llama-router.sh`) that handles SIGTERM cleanup (saves KV checkpoint before exit) and logs output. `ExecStartPost` automatically restores the last checkpoint on startup. The wrapper runs `llama-server` with `--models-max 2` (both models can be loaded) and `--models-preset` (per-model params from INI). Model parameters (cache-ram, ubatch, etc.) are defined in the preset INI, not in the service file. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights. `TimeoutStartSec=300` prevents systemd from killing the service during long model loads.
+> The service uses a wrapper script (`llama-router.sh`) that handles SIGTERM cleanup (saves KV checkpoint before exit) and logs output. `ExecStartPost` automatically restores the last checkpoint on startup. The wrapper runs `llama-server` with `--models-max 1` (single-model mode, 278 loaded by default) and `--models-preset` (per-model params from INI). Model parameters (cache-ram, ubatch, etc.) are defined in the preset INI, not in the service file. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights. `TimeoutStartSec=300` prevents systemd from killing the service during long model loads.
 
 ### 8. Model Switching
 
@@ -813,7 +813,7 @@ curl https://{your_domain}/v1/chat/completions \
 
 #### Hermes Agent
 
-[Hermes](https://github.com/nicobailon/hermes-agent) v0.15.1 — terminal AI agent with TUI, oneshot mode, multi-platform Gateway, MCP, Skills, and cron scheduling.
+[Hermes](https://github.com/nicobailon/hermes-agent) v0.16.0 — terminal AI agent with TUI, oneshot mode, multi-platform Gateway, MCP, Skills, and cron scheduling.
 
 **Install path:** `~/.hermes/` on WSL Ubuntu 26.04
 
@@ -976,14 +976,14 @@ approvals:
 - `auxiliary` — all 11 tasks routed to 358 (vision-capable MoE, ~50 t/s); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout
 - `auxiliary.vision.base_url` — ⚠️ **MUST be explicit** set to `https://{your_domain}/v1`. Empty string causes `resolve_vision_provider_client()` to skip the explicit branch, fall through to `_get_cached_client(is_vision=True)` → returns None → RuntimeError. Non-vision auxiliary tasks are safe with empty string (different code path). See Known Issues.
 - `approvals.mode: auto` — routine operations (file read, tool calls) pass automatically; only destructive actions (file deletion, dangerous commands) require manual confirmation. Use `manual` to require approval for everything (tedious for QQ Bot).
-- `approvals.timeout: 3600` — CLI approval max wait before auto-reject.
-- `approvals.gateway_timeout: 3600` — ⚠️ **Gateway (QQ Bot) approval timeout**. This field is separate from `timeout`; if unset, defaults to 300s (5 minutes). Users on messaging platforms often need more time to respond. Must be explicitly set to match the full-chain timeout.
+- `approvals.timeout: 7200` — CLI approval max wait before auto-reject.
+- `approvals.gateway_timeout: 7200` — ⚠️ **Gateway (QQ Bot) approval timeout**. This field is separate from `timeout`; if unset, defaults to 300s (5 minutes). Users on messaging platforms often need more time to respond. Must be explicitly set to match the full-chain timeout.
 
 **Environment variable overrides** (`~/.hermes/.env`):
 
 ```bash
 # Override Hermes hardcoded defaults — prevent long-context timeout at 120s/180s
-HERMES_STREAM_READ_TIMEOUT=3600
+HERMES_STREAM_READ_TIMEOUT=7200
 HERMES_STREAM_STALE_TIMEOUT=7200
 
 
@@ -1024,7 +1024,7 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 - [ ] `llm-router.service` created and **active** (server-level params only)
 - [ ] `~/model/router-preset.ini` configured with per-model params + aliases (278/358 only)
 - [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
-- [ ] Dual-model mode: both 278 and 358 loaded with independent slots
+- [ ] Single-model mode: 278 loaded; 358 available for manual switch (8-17s cold load)
 - [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
 - [ ] GPU temperature monitoring: `systemctl --user status gpu-temp-log.timer` active
@@ -1116,7 +1116,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Resolved — removed `--sleep-idle-seconds` from service config
 
-**Affected scenario:** Main model (27B Q8) + auxiliary model in dual-model resident mode (`models-max 2`), with `--sleep-idle-seconds` configured. **This scenario is obsolete — current deployment uses dual-model resident mode (`models-max 2`) without `--sleep-idle-seconds`.**
+**Affected scenario:** Main model (27B Q8) + auxiliary model in older dual-model resident mode (`models-max 2`), with `--sleep-idle-seconds` configured. **This scenario is obsolete — current deployment uses single-model mode (`models-max 1`) without `--sleep-idle-seconds`.**
 
 **Symptom:** Linux OOM killer terminates `llama-server` after hours of operation.
 
@@ -1127,14 +1127,14 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 4. 278 previously ran with `parallel = 2` (now fixed to `parallel = 1`) → large KV cache pre-allocation + prompt cache accumulation
 5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
 
-**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. Since only 278 and 358 are actively requested by clients, both remain loaded under `models-max 2`. There is no LRU eviction because no third model is requested. The idle-unload/reload cycle is the root cause of the OOM.
+**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. In single-model mode (`models-max 1`), only 278 is loaded and there is no second model to compete for memory. The idle-unload/reload cycle is the root cause of the OOM.
 
 **Resolution:**
 - Removed `--sleep-idle-seconds` from service config
-- All models use `parallel = 1`, `ctx-size = 262144` to leave memory headroom for dual-model co-residency
-- Memory headroom: 80.6 GB used / 131 GB total, ~44 GB available, swap ~17 MB
+- All models use `parallel = 1`, `ctx-size = 262144` to leave memory headroom
+- Single-model mode (`models-max 1`): 278 loaded, no second model competing for memory
 
-**Warning:** Do **not** re-add `--sleep-idle-seconds`. If a third model is requested (e.g., 358), LRU eviction will unload one of the two loaded models. This is expected behavior — the freed slot will be used for the requested model. If both 278 and 35xq must remain loaded, ensure no client requests a third model, or use a dedicated directory with only 2 models.
+**Warning:** Do **not** re-add `--sleep-idle-seconds`. In single-model mode, if a different model is requested (e.g., 358 via manual switch), the current model will be evicted and the new model loaded. This is expected behavior.
 
 ### `reasoning=off` Causes Catastrophic Checkpoint Restore Slowdown on APEX I-Quality
 
@@ -1203,9 +1203,9 @@ spec-draft-n-max = 3
 
 ### `--cache-ram -1` Causes VRAM Contention and 35B Cold-Load Stall
 
-**Status:** Mitigated — prompt cache now per-model in INI (278 `cache-ram = 16384`, 358 `cache-ram = 4096`), no longer in service config. Dual-model mode with per-model limits prevents unbounded growth.
+**Status:** Mitigated — prompt cache now per-model in INI (278 `cache-ram = 49152`, 358 `cache-ram = 65536`), no longer in service config. Single-model mode with per-model limits prevents unbounded growth.
 
-**Affected scenario:** Dual-model resident mode (`models-max 2`) with one model already loaded and serving long-context requests. **Mitigated by per-model `cache-ram` limits in INI.**
+**Affected scenario:** Single-model mode (`models-max 1`) with 278 loaded and serving long-context requests. **Mitigated by per-model `cache-ram` limits in INI.**
 
 **Symptom:** When the 27B model runs first and accumulates a large prompt cache (~12.4 GB for 131K tokens), a subsequent request to a 35B model triggers a cold load that stalls for 20+ minutes in the "fitting params to device memory" phase. The server appears frozen.
 
@@ -1223,13 +1223,13 @@ spec-draft-n-max = 3
 - After removing `-1`: dual-model loading complete in ~14 seconds, swap usage dropped from 10 GiB to 256 KiB
 
 **Fix:**
-- Prompt cache moved from service-level `--cache-ram` to per-model in INI: 278 `cache-ram = 16384`, 358 `cache-ram = 4096`
-- Dual-model mode with per-model `cache-ram` limits (`--models-max 2`), both models in memory with independent slots
-- Combined with per-model `--slot-save-path` KV checkpoint save/restore in INI, model switch latency is 30–60 seconds
+- Prompt cache moved from service-level `--cache-ram` to per-model in INI: 278 `cache-ram = 49152`, 358 `cache-ram = 65536`
+- Single-model mode with per-model `cache-ram` limits (`--models-max 1`), 278 loaded by default with cache-ram=49152
+- Combined with per-model `--slot-save-path` KV checkpoint save/restore in INI, model switch latency is 8-17 seconds (cold load)
 - GTT 120GB + mlock=1 ensures model weights stay in physical memory
-- **Do not** use `--cache-ram -1` in dual-model resident mode (`models-max 2`)
+- **Do not** use `--cache-ram -1` in any mode
 
-**Warning:** `--cache-ram -1` is only safe in single-model rotation mode with controlled workloads. In dual-model resident mode (`models-max 2`), with only 128 GB unified memory and two models totaling 41–59 GB, unlimited prompt cache from one model will starve the other on cold load. Current deployment uses `cache-ram = 16384/4096` (per model in INI) for stability.
+**Warning:** `--cache-ram -1` is only safe with controlled workloads. In single-model mode (`models-max 1`) with 128 GB unified memory, unlimited prompt cache from 278 can still grow to consume most available memory. Current deployment uses `cache-ram = 49152` (48 GB) for 278, leaving sufficient headroom.
 
 ---
 
@@ -1257,9 +1257,9 @@ spec-draft-n-max = 3
 
 ### Hermes Providers Key Mismatch Causes 120s Timeout Fallback
 
-**Status:** Fixed — providers key changed from `local-llm` to `custom:local-llm`
+**Status:** Fixed — v0.16.0 changed providers key to `local-llm` (no `custom:` prefix). v0.15.1 required `custom:local-llm`.
 
-**Affected scenario:** Hermes config where `model.provider = "custom:local-llm"` but `providers` dict key was `local-llm` (missing `custom:` prefix).
+**Affected scenario:** Hermes v0.15.1 config where `model.provider = "custom:local-llm"` but `providers` dict key was `local-llm` (missing `custom:` prefix). **Not applicable in v0.16.0** — providers key is now `local-llm` without prefix.
 
 **Symptom:** Long-context requests (>120K tokens) consistently fail at ~120s, even though `request_timeout_seconds` is set to 3600. Short requests work fine, making the issue hard to diagnose.
 
@@ -1281,4 +1281,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9625 Vulkan · 2026-06-03 · Updated 2026-06-14 (278 production benchmarks: 283 gen + 336 prefill tasks; cache-ram 32768/4096; b9625)*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9625 Vulkan · 2026-06-03 · Updated 2026-06-14 (single-model mode, cache-ram 49152/65536, Hermes v0.16.0, timeout 7200s)*

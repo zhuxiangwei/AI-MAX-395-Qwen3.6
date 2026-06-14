@@ -16,33 +16,35 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 
 **Auxiliary model — Hermes auxiliary tasks (vision, compression, etc.).** MoE activates only 3B/35B params per token. ~50 t/s generation with vision support.
 
-**Optimal config: F16 KV cache.** ≤128K → UB=512 (prefill +22~25%, TTFT -17~20% vs UB=256). 256K → UB=256 (elapsed -13% vs UB=512).
+**Optimal config: F16 KV cache, UB=256.** UB=256 is the current production config (stable across all context lengths). Previously UB=512 was optimal for ≤128K (+22~25% prefill, -17~20% TTFT), but UB=256 is now unified for all models.
 
 **Ruled out:** UB=128 (MTP 86%→65%, gen slower); UB≥1024 (p256K prefill -44%, TTFT +80%); Q8_0 KV (dequant overhead > bandwidth savings for sparse KV; all Q8_0 UBs slower than F16 UB=256); UB≥2048 (Vulkan crash at 128K+).
 
-#### F16 KV UB=512 (optimal ≤128K)
+#### F16 KV UB=256 (production config)
 
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | 56.7 | 371.0 | 0.43s |
-| p4K | 56.7 | 931.4 | 8.2s |
-| p32K | 50.1 | 730.1 | 50.0s |
-| p64K | 46.7 | 590.7 | 117.3s |
-| p128K | 38.0 | 416.2 | 325.9s |
-| p256K | 28.4 | 217.6 | 1149.7s |
+**Generation speed by context length** (201 tasks, cache-ram=65536):
 
-#### F16 KV UB=256 (optimal 256K)
+| Context | Tasks | P50 (t/s) | Mean (t/s) |
+|---------|-------|-----------|------------|
+| <4K | 5 | 55.4 | 59.5 |
+| 4–16K | 3 | 50.3 | 53.2 |
+| 16–64K | 46 | 55.2 | 55.9 |
+| 64–130K | 132 | 48.1 | 48.0 |
+| 130–200K | 15 | 43.7 | 43.0 |
 
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | 58.2 | 427.9 | 0.37s |
-| p4K | 54.6 | 746.9 | 10.3s |
-| p32K | 48.7 | 590.0 | 61.9s |
-| p64K | 46.9 | 485.1 | 142.9s |
-| p128K | 38.0 | 363.1 | 373.6s |
-| p256K | 29.3 | 250.4 | 999.2s |
+**Prefill speed by context length** (cold start, cache-ram=65536):
 
-> Gen speed is nearly identical across UB=256/512 (±2 t/s). UB choice mainly affects prefill/TTFT: UB=512 is faster at ≤128K; UB=256 is faster at 256K.
+| Context | Tasks | P50 (t/s) | Mean (t/s) |
+|---------|-------|-----------|------------|
+| <4K | 4 | 453.8 | 470.8 |
+| 4–16K | 2 | 418.0 | 418.0 |
+| 16–64K | 33 | 313.9 | 299.0 |
+| 64–130K | 104 | 236.0 | 235.7 |
+| 130–200K | 14 | 222.9 | 218.8 |
+
+> Production workload log data (F16 KV, UB=256, cache-ram=65536, llama.cpp b9625). MTP acceptance: mean 83.7%, median 85.7%. KV cache at ~130K tokens: ~318 MiB (~2.4 KB/token due to MoE sparse heads). Checkpoint eviction observed (143 erased/225 created), indicating cache-ram is adequate for single-conversation workloads but cross-conversation cache reuse limited by Qwen3 SWA architecture.
+>
+> **Historical reference (F16 KV UB=512, superseded):** p128=56.7, p4K=56.7, p32K=50.1, p64K=46.7, p128K=38.0, p256K=28.4 t/s gen; 371–931 t/s prefill. Gen speed nearly identical across UB=256/512 (±2 t/s); UB choice mainly affects prefill/TTFT.
 
 ### 35B-A3B MoE APEX I-Quality (alias `35xq`, ~22 GB)
 

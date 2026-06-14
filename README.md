@@ -46,13 +46,15 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 >
 > **Historical reference (F16 KV UB=512, superseded):** p128=56.7, p4K=56.7, p32K=50.1, p64K=46.7, p128K=38.0, p256K=28.4 t/s gen; 371–931 t/s prefill. Gen speed nearly identical across UB=256/512 (±2 t/s); UB choice mainly affects prefill/TTFT.
 
-### 35B-A3B MoE APEX I-Quality (alias `35xq`, ~22 GB)
+### 35B-A3B MoE APEX I-Quality (alias `35xq`, ~22 GB) — **DELETED**
 
-APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Auxiliary model with mmproj for vision tasks. Reasoning is enabled by default (`reasoning-budget = 8192`); clients can disable thinking per-request via `chat_template_kwargs.enable_thinking: false`.
+⚠ Model file removed. Benchmark data preserved for reference.
 
-**Optimal config: F16 KV cache.** Same pattern as 35B UD-Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
+APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Was auxiliary model with mmproj for vision tasks.
 
-#### F16 KV UB=512 (optimal ≤128K)
+**Historical config: F16 KV cache.** Same pattern as 35B UD-Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
+
+#### F16 KV UB=512 (historical benchmark)
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
@@ -62,17 +64,6 @@ APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per 
 | p64K | 57.2 | 590.0 | 117.5s |
 | p128K | 47.0 | 425.1 | 319.1s |
 | p256K | 32.9 | 241.0 | 1038.2s |
-
-#### F16 KV UB=256 (optimal 256K)
-
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | 82.4 | 396.7 | 0.40s |
-| p4K | 73.5 | 761.2 | 10.1s |
-| p32K | 66.8 | 597.7 | 61.1s |
-| p64K | 58.8 | 488.7 | 141.8s |
-| p128K | 42.9 | 364.1 | 372.5s |
-| p256K | 32.2 | 251.1 | 996.4s |
 
 > APEX I-Quality gen speed **~48% faster** than UD-Q8 at all prompt sizes (80 vs 54 t/s). File size 21.9 GB vs 37 GB.
 
@@ -147,15 +138,15 @@ Dense model — all 27B params active per token. Current Hermes default model.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 
-### 27B Dense Q6 (Q6_K_XL, alias `276`)
+### 27B Dense Q6 (Q6_K_XL, alias `276`) — **DELETED**
 
-Dense model, Q6 quantization — best balance of speed and accuracy.
+⚠ Model file removed. Benchmark data preserved for reference.
 
-**Optimal config: Q8_0 KV + UB=512.**
+Dense model, Q6 quantization — was best balance of speed and accuracy.
 
-**Ruled out:** F16 KV UB≥512 (p64K+ OOM/timeout); F16 KV UB=128 (unlocks p256K but 2× slower elapsed than Q8_0 KV: 5671s vs 3130s); Q8_0 UB=1024 (marginally worse at p64K+); UB≥2048 (Vulkan crash).
+**Historical config: Q8_0 KV + UB=512.**
 
-#### Q8_0 KV UB=512
+#### Q8_0 KV UB=512 (historical benchmark)
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
@@ -168,15 +159,15 @@ Dense model, Q6 quantization — best balance of speed and accuracy.
 
 > p256K elapsed: 3130s (~52 min).
 
-### 27B Dense Q4 (Q4_K_XL, alias `274`)
+### 27B Dense Q4 (Q4_K_XL, alias `274`) — **DELETED**
 
-Dense model, Q4 quantization — fastest generation among Dense models.
+⚠ Model file removed. Benchmark data preserved for reference.
 
-**Optimal config: Q8_0 KV + UB=1024.**
+Dense model, Q4 quantization — was fastest generation among Dense models.
 
-**Ruled out:** F16 KV UB≥1024 (p32K+ OOM); F16 KV UB=128 (unlocks p256K but 1.8× slower elapsed: 5325s vs 2886s); Q8_0 UB≤256 (slower at p32K+); UB≥2048 (Vulkan crash at p256K).
+**Historical config: Q8_0 KV + UB=1024.**
 
-#### Q8_0 KV UB=1024
+#### Q8_0 KV UB=1024 (historical benchmark)
 
 | Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
 |--------|----------|--------------|------|
@@ -1116,50 +1107,19 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ### OOM Kill with Dual-Model + `--sleep-idle-seconds`
 
-**Status:** Resolved — removed `--sleep-idle-seconds` from service config
+**Status:** Resolved — removed `--sleep-idle-seconds`; current deployment uses single-model mode (`models-max 1`)
 
-**Affected scenario:** Main model (27B Q8) + auxiliary model in older dual-model resident mode (`models-max 2`), with `--sleep-idle-seconds` configured. **This scenario is obsolete — current deployment uses single-model mode (`models-max 1`) without `--sleep-idle-seconds`.**
+**Historical scenario:** Dual-model resident mode (`models-max 2`) with `--sleep-idle-seconds`. Idle-unload/reload cycle caused memory spike exceeding 128 GB RAM → OOM Kill. Resolved by switching to single-model mode without `--sleep-idle-seconds`.
 
-**Symptom:** Linux OOM killer terminates `llama-server` after hours of operation.
+### `reasoning=off` Causes Catastrophic Checkpoint Restore Slowdown
 
-**Root cause chain:**
-1. `--sleep-idle-seconds 600` unloads the 35xq model after 10 minutes of inactivity, releasing memory
-2. Next request for 35xq triggers a cold reload → model weights read from disk + `mlock` into RAM
-3. During cold reload, the already-loaded model and the loading model coexist in memory
-4. 278 previously ran with `parallel = 2` (now fixed to `parallel = 1`) → large KV cache pre-allocation + prompt cache accumulation
-5. Cold reload memory spike exceeds 128 GB RAM + 8 GB swap → OOM Kill
+**Status:** Fixed — removed `reasoning = off` and `reasoning-budget = 0` from model presets, replaced with `reasoning-budget = 8192`
 
-**Key insight:** Without `--sleep-idle-seconds`, loaded models stay resident. In single-model mode (`models-max 1`), only 278 is loaded and there is no second model to compete for memory. The idle-unload/reload cycle is the root cause of the OOM.
+**Affected model:** 35B-A3B APEX I-Quality (alias `35xq`, **deleted**) only. All other models (358/35xb/278) are unaffected.
 
-**Resolution:**
-- Removed `--sleep-idle-seconds` from service config
-- All models use `parallel = 1`, `ctx-size = 262144` to leave memory headroom
-- Single-model mode (`models-max 1`): 278 loaded, no second model competing for memory
+**Root cause:** `reasoning = off` creates an attention mask mismatch between the checkpoint and runtime configuration. When restoring a prompt cache checkpoint, llama-server detects the mismatch and falls back to slow re-prefilling.
 
-**Warning:** Do **not** re-add `--sleep-idle-seconds`. In single-model mode, if a different model is requested (e.g., 358 via manual switch), the current model will be evicted and the new model loaded. This is expected behavior.
-
-### `reasoning=off` Causes Catastrophic Checkpoint Restore Slowdown on APEX I-Quality
-
-**Status:** Fixed — removed `reasoning = off` and `reasoning-budget = 0` from 35xq preset, replaced with `reasoning-budget = 8192`
-
-**Affected model:** 35B-A3B APEX I-Quality (alias `35xq`, deleted) only. All other models (358/35xb/278) are unaffected.
-
-**Symptom:** After the first request to 35xq, subsequent requests take 43–75 seconds instead of <0.5 seconds. The server appears frozen — no output for tens of seconds, then response arrives at ~1 t/s.
-
-**Root cause:** `reasoning = off` creates an attention mask mismatch between the checkpoint (saved with default reasoning-enabled state) and the model's runtime configuration. When llama-server attempts to restore a prompt cache checkpoint, it detects the mismatch and falls back to a slow path — re-prefilling all tokens from the checkpoint instead of loading the KV cache snapshot directly.
-
-**Evidence:**
-
-| Configuration | Prefill speed | Checkpoint restore |
-|--------------|-------------|-------------------|
-| `reasoning=off` (broken) | 0.37–0.95 t/s | 43–75s ❌ |
-| `reasoning-budget=8192` (fixed) | 118–129 t/s | <0.1s ✅ |
-
-Other MoE models (358, 35xb) with reasoning enabled have no checkpoint issues. Only the combination of `reasoning=off` + APEX I-Quality triggers the bug.
-
-**Fix:** Remove `reasoning = off` and `reasoning-budget = 0` from the 35xq preset section. Use `reasoning-budget = 8192` (same as other models). If thinking output is not desired, disable it per-request via `chat_template_kwargs: { enable_thinking: false }` in the API request body.
-
-**Warning:** Do **not** re-add `reasoning = off` to any model preset. This is the third reasoning-related bug discovered (after `reasoning-format=none` causing duplicate output, and `reasoning=off` causing checkpoint restore failure). The safe approach is to always keep reasoning enabled at the server level and control it per-request.
+**Warning:** Do **not** re-add `reasoning = off` to any model preset. Always keep reasoning enabled at the server level and control it per-request via `chat_template_kwargs: { enable_thinking: false }`.
 
 ---
 
@@ -1205,33 +1165,11 @@ spec-draft-n-max = 3
 
 ### `--cache-ram -1` Causes VRAM Contention and 35B Cold-Load Stall
 
-**Status:** Mitigated — prompt cache now per-model in INI (278 `cache-ram = 49152`, 358 `cache-ram = 65536`), no longer in service config. Single-model mode with per-model limits prevents unbounded growth.
+**Status:** Mitigated — prompt cache now per-model in INI (278 `cache-ram = 49152`, 358 `cache-ram = 65536`). Single-model mode (`models-max 1`) prevents unbounded growth.
 
-**Affected scenario:** Single-model mode (`models-max 1`) with 278 loaded and serving long-context requests. **Mitigated by per-model `cache-ram` limits in INI.**
+**Symptom:** `--cache-ram -1` allows prompt cache to grow without bound. In single-model mode, 278's cache consumed ~12+ GB, leaving insufficient headroom for 358 cold load (stalled 20+ minutes).
 
-**Symptom:** When the 27B model runs first and accumulates a large prompt cache (~12.4 GB for 131K tokens), a subsequent request to a 35B model triggers a cold load that stalls for 20+ minutes in the "fitting params to device memory" phase. The server appears frozen.
-
-**Root cause chain:**
-1. `--cache-ram -1` allows the 27B's prompt cache to grow without bound (up to ~30 checkpoints × ~400 MB each on Vulkan unified memory)
-2. After serving long-context requests, the 27B's prompt cache consumes ~12+ GB of memory, leaving insufficient headroom
-3. When the 35B is requested, llama-server must fit its ~22–37 GB model weights into the remaining memory
-4. With most free memory already consumed by the 27B's prompt cache, the 35B loading process enters a tight allocation-retry loop during "fitting params to device memory"
-5. This loop can last 20–30 minutes before eventually succeeding or being killed
-
-**Evidence (from logs):**
-- 35B cold load during normal conditions (both models not yet loaded): ~14 seconds
-- 35B cold load with 27B already occupying memory via `--cache-ram -1`: 20–28 minutes
-- System memory at saturation: 96+ GiB used out of 124 GiB, with buffer/cache inflating apparent usage
-- After removing `-1`: dual-model loading complete in ~14 seconds, swap usage dropped from 10 GiB to 256 KiB
-
-**Fix:**
-- Prompt cache moved from service-level `--cache-ram` to per-model in INI: 278 `cache-ram = 49152`, 358 `cache-ram = 65536`
-- Single-model mode with per-model `cache-ram` limits (`--models-max 1`), 278 loaded by default with cache-ram=49152
-- Combined with per-model `--slot-save-path` KV checkpoint save/restore in INI, model switch latency is 8-17 seconds (cold load)
-- GTT 120GB + mlock=1 ensures model weights stay in physical memory
-- **Do not** use `--cache-ram -1` in any mode
-
-**Warning:** `--cache-ram -1` is only safe with controlled workloads. In single-model mode (`models-max 1`) with 128 GB unified memory, unlimited prompt cache from 278 can still grow to consume most available memory. Current deployment uses `cache-ram = 49152` (48 GB) for 278, leaving sufficient headroom.
+**Fix:** Per-model `cache-ram` limits in INI + single-model mode. **Do not** use `--cache-ram -1` in any mode.
 
 ---
 

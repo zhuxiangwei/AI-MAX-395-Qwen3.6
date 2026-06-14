@@ -118,30 +118,30 @@ Dense model — all 27B params active per token. Current Hermes default model.
 
 #### F16 KV UB=256 (current config, b9625)
 
-**Generation speed by response length** (283 tasks, decoded ≥ 100 tokens):
+**Generation speed by response length** (378 tasks, decoded ≥ 100 tokens):
 
 | Response length | Tasks | Avg (t/s) | P50 (t/s) |
 |----------------|-------|----------|----------|
-| <200 tokens | 89 | 12.2 | 12.3 |
-| 200–500 | 97 | 12.3 | 12.8 |
-| 500–1K | 36 | 11.6 | 11.4 |
-| 1K–3K | 40 | 10.3 | 10.2 |
-| 3K–5K | 13 | 10.4 | 10.3 |
-| 5K+ | 8 | 9.2 | 8.8 |
+| <200 tokens | 92 | 11.7 | 11.9 |
+| 200–500 | 145 | 12.0 | 12.1 |
+| 500–1K | 66 | 10.8 | 10.4 |
+| 1K–3K | 53 | 10.2 | 10.2 |
+| 3K–5K | 13 | 10.1 | 10.0 |
+| 5K+ | 9 | 9.2 | 8.8 |
 
-**Prefill speed by prompt length** (336 complete tasks, tokens ≥ 100):
+**Prefill speed by prompt length** (413 complete tasks, tokens ≥ 100):
 
 | Prompt length | Tasks | Avg (t/s) | P50 (t/s) |
 |--------------|-------|----------|----------|
-| <1K | 144 | 69 | 55 |
-| 1K–5K | 111 | 86 | 55 |
-| 5K–10K | 53 | 90 | 50 |
-| 10K–30K | 58 | 142 | 167 |
-| 30K–60K | 4 | 71 | 94 |
-| 60K–130K | 5 | 93 | 116 |
-| 130K+ | 3 | 45 | 45 |
+| <1K | 119 | 50 | 28 |
+| 1K–5K | 147 | 71 | 30 |
+| 5K–10K | 67 | 79 | 44 |
+| 10K–30K | 65 | 132 | 149 |
+| 30K–60K | 5 | 62 | 57 |
+| 60K–130K | 6 | 91 | 98 |
+| 130K+ | 4 | 46 | 46 |
 
-> † Production workload log data (F16 KV, UB=256, cache-ram=49152, llama.cpp b9625, 283 gen + 336 prefill tasks). Gen speed includes thinking tokens. Short/medium context: gen stable at 11–13 t/s; long context (5K+ decoded): 8–10 t/s. Prefill varies widely with cache-hit rate; 10K–30K benefits most from prompt cache reuse.
+> † Production workload log data (F16 KV, UB=256, cache-ram=49152, llama.cpp b9625, 378 gen + 413 prefill tasks). Gen speed includes thinking tokens. Short/medium context: gen stable at 11–13 t/s; long context (5K+ decoded): 8–10 t/s. Prefill varies widely with cache-hit rate; short contexts (<5K) show low P50 due to incremental cache-hit prefills. True cold prefill at 16K+: 150–226 t/s (median ~200 t/s). At 130K+: ~45 t/s.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 

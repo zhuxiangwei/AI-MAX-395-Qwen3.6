@@ -810,187 +810,49 @@ curl https://{your_domain}/v1/chat/completions \
 
 **Install path:** `~/.hermes/` on WSL Ubuntu 26.04
 
-**Config file:** `~/.hermes/config.yaml`
+**Config file:** `~/.hermes/config.yaml` — two independent deployments, one model each:
 
-```yaml
-providers:
-  custom:local-llm:                                    # ⚠️ must include "custom:" prefix to match model.provider
-    name: "Local LLM (Strix Halo)"
-    base_url: "https://{your_domain}/v1"
-    key_env: "DASHENZHIYAN_API_KEY"
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: true       # enables thinking mode
-    models:
-      "278":
-        context_length: 262144
-        max_output_tokens: 32768
-        supports_vision: false   # 27B Dense has no mmproj
-      "358":
-        context_length: 262144
-        max_output_tokens: 32768
-        supports_vision: true    # 35B MoE with mmproj, handles vision tasks
-    request_timeout_seconds: 3600  # API request timeout (aligned with llama-server --timeout)
-    stale_timeout_seconds: 3600   # stream stale detection (must match request_timeout for long contexts)
+| | Machine A (278-only) | Machine B (358-only) |
+|---|---|---|
+| **model.default** | `278` (27B Dense) | `358` (35B MoE) |
+| **providers.models** | `278` only | `358` only |
+| **supports_vision** | `false` | `true` (mmproj) |
+| **auxiliary tasks** | all → `278`, no vision | all → `358`, vision enabled |
+| **fallback_model** | `{provider: local-llm, model: '278'}` | `{provider: local-llm, model: '358'}` |
 
-model:
-  default: "278"                   # primary model: 278 (27B Dense, highest quality, ~13 t/s)
-  provider: "custom:local-llm"
-  base_url: "https://{your_domain}/v1"
-  extra_body:
-    chat_template_kwargs:
-      enable_thinking: true
-max_tokens: 32768                 # must ≥ reasoning-budget + expected output
-
-fallback_model:
-  provider: custom:local-llm
-  model: '278'                     # same as default; 358 available for manual switch
-
-agent:
-  gateway_timeout: 3600           # gateway-level timeout (aligned with all other timeouts)
-
-streaming:
-  enabled: true                  # gateway bot streaming (editMessage)
-
-compression:
-  enabled: true
-  threshold: 0.80                # trigger compression at 80% context
-  target_ratio: 0.30             # keep 30% of threshold as recent tail
-  protect_last_n: 20             # never compress the most recent 20 messages
-
-auxiliary:                         # all auxiliary tasks routed to 358 (vision-capable MoE, ~50 t/s)
-                                  # 278 = primary model (main conversations, highest quality)
-                                  # 358 = auxiliary model (compression, vision, etc.)
-                                  # title_generation uses 278 to avoid model switching churn
-  vision:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"   # MUST be explicit - empty string causes RuntimeError
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  web_extract:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  compression:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  skills_hub:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  approval:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  mcp:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  title_generation:
-    provider: custom:local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  triage_specifier:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  kanban_decomposer:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  profile_describer:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  curator:
-    provider: custom:local-llm
-    model: '358'
-    base_url: "https://{your_domain}/v1"
-    timeout: 3600
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-
-approvals:
-  mode: auto                        # routine ops pass; destructive actions require confirmation
-  timeout: 3600                     # CLI approval timeout
-  gateway_timeout: 3600             # Gateway (QQ Bot) approval timeout; defaults to 300s if unset
-
-**Configuration notes:**
-- `provider: "custom:local-llm"` — uses named providers section ("custom" direct-alias ignores `extra_body`)
-- ⚠️ **providers key must include `custom:` prefix** — i.e. `custom:local-llm`, not `local-llm`. If the key doesn't match `model.provider`, Hermes' `get_provider_request_timeout()` returns `None` → falls back to hardcoded `HERMES_STREAM_READ_TIMEOUT = 120s`, causing long-context requests to time out. This was the root cause of a cascading timeout incident (see Known Issues)
-- `key_env: "DASHENZHIYAN_API_KEY"` — set in `~/.hermes/.env`
-- `supports_vision: false` on 278 (27B Dense, no mmproj); `supports_vision: true` on 358 (35B MoE, has mmproj)
-- `max_tokens: 32768` — must be ≥ reasoning-budget (16384) + expected output; 8192 is too small
-- `chat_template_kwargs: enable_thinking: true` — enables thinking mode; omit or set `false` to disable
-- `context_length` is per-slot (ctx-size ÷ parallel), not total ctx-size
-- `stale_timeout_seconds: 3600` — must align with `request_timeout_seconds` for long-context prefill (>1000s)
-- `gateway_timeout: 3600` — gateway-level timeout aligned with all other timeouts
-- `auxiliary` — all 11 tasks routed to 358 (vision-capable MoE, ~50 t/s); `enable_thinking: false` to reduce latency; `timeout: 3600` aligned with full-chain timeout
-- `auxiliary.vision.base_url` — ⚠️ **MUST be explicit** set to `https://{your_domain}/v1`. Empty string causes `resolve_vision_provider_client()` to skip the explicit branch, fall through to `_get_cached_client(is_vision=True)` → returns None → RuntimeError. Non-vision auxiliary tasks are safe with empty string (different code path). See Known Issues.
-- `approvals.mode: auto` — routine operations (file read, tool calls) pass automatically; only destructive actions (file deletion, dangerous commands) require manual confirmation. Use `manual` to require approval for everything (tedious for QQ Bot).
-- `approvals.timeout: 7200` — CLI approval max wait before auto-reject.
-- `approvals.gateway_timeout: 7200` — ⚠️ **Gateway (QQ Bot) approval timeout**. This field is separate from `timeout`; if unset, defaults to 300s (5 minutes). Users on messaging platforms often need more time to respond. Must be explicitly set to match the full-chain timeout.
+**Shared config:**
+- Provider: `local-llm` → `https://{your_domain}/v1` (v0.16.0 key format, no `custom:` prefix)
+- `key_env: DASHENZHIYAN_API_KEY` (set in `~/.hermes/.env`)
+- `context_length: 262144`, `max_output_tokens: 32768`, `max_tokens: 32768`
+- `request_timeout_seconds: 7200`, `stale_timeout_seconds: 7200` (aligned with full-chain timeout)
+- `agent.gateway_timeout: 7200`, `approvals.timeout: 7200`, `approvals.gateway_timeout: 7200`
+- `chat_template_kwargs.enable_thinking: true` (main), `false` (auxiliary)
+- `compression: threshold=0.80, target_ratio=0.30, protect_last_n=20`
+- `streaming.enabled: true` (gateway bot streaming)
+- `approvals.mode: auto` (routine ops pass; destructive actions require confirmation)
 
 **Environment variable overrides** (`~/.hermes/.env`):
-
 ```bash
-# Override Hermes hardcoded defaults — prevent long-context timeout at 120s/180s
-HERMES_STREAM_READ_TIMEOUT=7200
-HERMES_STREAM_STALE_TIMEOUT=7200
-
-
+HERMES_STREAM_READ_TIMEOUT=7200   # override hardcoded 120s default
+HERMES_STREAM_STALE_TIMEOUT=7200  # override hardcoded 180s default
 ```
+
+**⚠️ Pitfalls:**
+- `providers` key must be `local-llm` (v0.16.0), not `custom:local-llm` (v0.15.1). Mismatch → timeout falls back to 120s
+- `auxiliary.vision.base_url` must be explicit (empty string → RuntimeError on vision tasks)
+- `fallback_model` must be dict `{provider: ..., model: ...}`, not bare string
+- `yaml.dump` may drop bare string values (e.g. `fallback_model: '278'` → empty); verify after rewrite
 
 **Usage:**
 ```bash
 wsl                                    # enter WSL
 hermes                                 # TUI mode (interactive)
 hermes -z 'quick question'             # oneshot mode
-hermes -z 'question' --model 358       # oneshot with specific model
 ```
 
-**TUI commands:** `/model 358` switch model, `/skills` list skills, `/help` all commands, `Ctrl+C` interrupt, `Ctrl+D` or `/exit` quit.
+**TUI commands:** `/skills` list skills, `/help` all commands, `Ctrl+C` interrupt, `Ctrl+D` or `/exit` quit.
+
+Full config backups: `docs/hermes/config-278.yaml` and `docs/hermes/config-358.yaml`
 
 #### QClaw
 

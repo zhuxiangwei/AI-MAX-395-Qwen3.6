@@ -808,186 +808,50 @@ curl https://{your_domain}/v1/chat/completions \
 
 **安装路径：** WSL Ubuntu 26.04 上的 `~/.hermes/`
 
-**配置文件：** `~/.hermes/config.yaml`
+**配置文件：** `~/.hermes/config.yaml` — 两套独立部署，各用一个模型：
 
-```yaml
-providers:
-  local-llm:                                          # v0.16.0: 无需 "custom:" 前缀（v0.15.1 需要）
-    name: "Local LLM (Strix Halo)"
-    base_url: "https://{your_domain}/v1"
-    key_env: "DASHENZHIYAN_API_KEY"
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: true       # 启用思考模式
-    models:
-      "278":
-        context_length: 262144
-        max_output_tokens: 32768
-        supports_vision: false   # 27B Dense 无 mmproj
-      "358":
-        context_length: 262144
-        max_output_tokens: 32768
-        supports_vision: false   # 35B MoE 视觉已禁用（单模型模式，mmproj 未加载）
-    request_timeout_seconds: 7200  # API 请求超时（7200s 支持超长推理）
-    stale_timeout_seconds: 7200   # 流式停滞检测（必须与 request_timeout 对齐以支持长上下文）
+| | 机器 A（278-only） | 机器 B（358-only） |
+|---|---|---|
+| **model.default** | `278`（27B Dense） | `358`（35B MoE） |
+| **providers.models** | 仅 `278` | 仅 `358` |
+| **supports_vision** | `false` | `true`（mmproj） |
+| **auxiliary 任务** | 全部 → `278`，禁用视觉 | 全部 → `358`，启用视觉 |
+| **fallback_model** | `{provider: local-llm, model: '278'}` | `{provider: local-llm, model: '358'}` |
 
-model:
-  default: "278"                   # 主力模型：278（27B Dense，质量最高，~13 t/s）
-  provider: "local-llm"
-  base_url: "https://{your_domain}/v1"
-  extra_body:
-    chat_template_kwargs:
-      enable_thinking: true
-max_tokens: 32768                 # 必须 ≥ reasoning-budget + 预期输出
-
-fallback_model: 278               # 简单字符串值；与 default 相同
-
-agent:
-  gateway_timeout: 7200           # Gateway 级超时（7200s 与所有超时对齐）
-
-streaming:
-  enabled: true                  # Gateway Bot 流式输出（editMessage）
-
-compression:
-  enabled: true
-  threshold: 0.80                # 80% 上下文使用率时触发压缩
-  target_ratio: 0.30             # 压缩后保留 30% 阈值作为最近上下文
-  protect_last_n: 20             # 永不压缩最近 20 条消息
-
-auxiliary:                         # 所有辅助任务路由到 278（单模型模式）
-                                  # 278 = 主力模型（主对话，质量最高）
-                                  # 358 未加载（仅手动切换）
-                                  # title_generation 也使用 278 以避免模型切换开销
-  vision:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"   # ⚠️ 必须显式设置——空字符串导致 RuntimeError
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  web_extract:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  compression:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  skills_hub:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  approval:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  mcp:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  title_generation:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  triage_specifier:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  kanban_decomposer:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  profile_describer:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  curator:
-    provider: local-llm
-    model: '278'
-    base_url: "https://{your_domain}/v1"
-    timeout: 7200
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-
-approvals:
-  mode: auto                        # 日常操作自动通过，破坏性操作需确认
-  timeout: 7200                     # CLI 审批超时
-  gateway_timeout: 7200             # Gateway（QQ Bot）审批超时；未设置时默认仅 300 秒
-```
-
-**配置要点：**
-- `provider: "local-llm"` — v0.16.0: 走命名 providers 解析路径，无需 `custom:` 前缀。**v0.15.1 需要 `custom:local-llm`**（见已知问题中的 providers 键名不匹配 bug）。v0.16.0 修复了 `_get_named_custom_provider` 匹配逻辑，支持裸 provider 名。
-- ⚠️ **如降级回 v0.15.1**，需将 providers 键改回 `custom:local-llm` 以匹配 `model.provider`，否则 `get_provider_request_timeout()` 返回 `None` → 回退到 `HERMES_STREAM_READ_TIMEOUT = 120s`（见已知问题）
-- `key_env: "DASHENZHIYAN_API_KEY"` — 需在 `~/.hermes/.env` 中设置
-- `supports_vision: false` 在 278 和 358 均为 false（单模型模式下视觉已禁用；358 有 mmproj 能力但当前未加载）
-- `max_tokens: 32768` — 必须 ≥ reasoning-budget (16384) + 预期输出；8192 不够
-- `chat_template_kwargs: enable_thinking: true` — 启用思考模式；省略或设 `false` 关闭
-- `context_length` 是每 slot 上下文（ctx-size ÷ parallel），不是总 ctx-size
-- `stale_timeout_seconds: 7200` — 必须与 `request_timeout_seconds` 对齐以支持长上下文 prefill（>1000s）
-- `gateway_timeout: 7200` — Gateway 级超时与所有其他超时对齐（7200s）
-- `auxiliary` — 全部任务路由到 278（单模型模式；358 未加载）；`enable_thinking: false` 降低延迟；`timeout: 7200` 与全链路超时对齐
-- `auxiliary.vision.base_url` — ⚠️ **必须显式设置**为 `https://{your_domain}/v1`。空字符串会导致 `resolve_vision_provider_client()` 跳过显式分支 → RuntimeError。非视觉辅助任务空字符串正常（不同代码路径）。参见已知问题。
-- `approvals.mode: auto` — 日常操作（文件读取、工具调用）自动通过，仅破坏性操作（删文件、危险命令）需手动确认。设为 `manual` 时 QQ Bot 每次工具调用都弹确认，体验很差
-- `approvals.timeout: 7200` — CLI 审批最长等待时间
-- `approvals.gateway_timeout: 7200` — ⚠️ **Gateway（QQ Bot）审批超时**，与 `timeout` 是独立字段；未设置时默认仅 300 秒（5 分钟），消息平台用户常需更长时间响应，必须显式设置
+**共享配置：**
+- Provider：`local-llm` → `https://{your_domain}/v1`（v0.16.0 键名格式，不含 `custom:` 前缀）
+- `key_env: DASHENZHIYAN_API_KEY`（在 `~/.hermes/.env` 中设置）
+- `context_length: 262144`、`max_output_tokens: 32768`、`max_tokens: 32768`
+- `request_timeout_seconds: 7200`、`stale_timeout_seconds: 7200`（与全链路超时对齐）
+- `agent.gateway_timeout: 7200`、`approvals.timeout: 7200`、`approvals.gateway_timeout: 7200`
+- `chat_template_kwargs.enable_thinking: true`（主模型）、`false`（auxiliary）
+- `compression: threshold=0.80, target_ratio=0.30, protect_last_n=20`
+- `streaming.enabled: true`（Gateway bot 流式输出）
+- `approvals.mode: auto`（常规操作自动通过；破坏性操作需确认）
 
 **环境变量覆盖**（`~/.hermes/.env`）：
-
 ```bash
-# 覆盖 Hermes 硬编码默认值——防止长上下文在 120s/180s 超时
-HERMES_STREAM_READ_TIMEOUT=7200
-HERMES_STREAM_STALE_TIMEOUT=7200
-
-
+HERMES_STREAM_READ_TIMEOUT=7200   # 覆盖硬编码 120s 默认值
+HERMES_STREAM_STALE_TIMEOUT=7200  # 覆盖硬编码 180s 默认值
 ```
 
-**使用方式：**
+**⚠️ 常见陷阱：**
+- `providers` 键名必须为 `local-llm`（v0.16.0），不是 `custom:local-llm`（v0.15.1）。不匹配 → 超时回退到 120s
+- `auxiliary.vision.base_url` 必须显式设置（空字符串 → RuntimeError）
+- `fallback_model` 必须为 dict `{provider: ..., model: ...}`，不能是裸字符串
+- `yaml.dump` 可能丢失裸字符串值（如 `fallback_model: '278'` → 空）；重写后务必验证
+
+**用法：**
 ```bash
 wsl                                    # 进入 WSL
 hermes                                 # TUI 模式（交互式）
-hermes -z '快速问题'                    # oneshot 模式
-hermes -z '问题' --model 358            # 切换到辅助模型的 oneshot
+hermes -z '快速提问'                   # oneshot 模式
 ```
 
-**TUI 常用命令：** `/model 358` 切换模型、`/skills` 查看技能、`/help` 全部命令、`Ctrl+C` 中断回复、`Ctrl+D` 或 `/exit` 退出。
+**TUI 常用命令：** `/skills` 查看技能、`/help` 全部命令、`Ctrl+C` 中断回复、`Ctrl+D` 或 `/exit` 退出。
+
+完整配置备份：`docs/hermes/config-278.yaml` 和 `docs/hermes/config-358.yaml`
+
 
 #### QClaw
 

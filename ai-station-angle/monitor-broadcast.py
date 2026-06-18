@@ -35,17 +35,18 @@ TTS_SPEAKER = 3061
 TTS_VOLUME = 0.3          # 30% 音量
 
 FAST_POLL = 30            # 快速轮询 30s（模型切换 + 任务状态）
-SLOW_POLL = 300           # 慢速轮询 300s（硬件 + 日志告警 + 日常）
+SLOW_POLL = 60            # 慢速轮询 60s（硬件 + 日志告警 + 日常）
 COOLDOWN = 300            # 非严重告警全局冷却 5 分钟
 ALERT_DEDUP = 300         # 同类严重告警去重 5 分钟
 DAILY_INTERVAL = 3600     # 日常播报 1 小时
 
 # ============ 硬件阈值 ============
-GPU_TEMP_WARN = 85
-GPU_TEMP_CRIT = 92
-MEM_WARN_PCT = 92
-MEM_CRIT_PCT = 97
-GPU_PWR_HIGH = 120
+GPU_TEMP_WARN = 80
+GPU_TEMP_CRIT = 90
+MEM_WARN_PCT = 80
+MEM_CRIT_PCT = 90
+GPU_PWR_WARN = 100
+GPU_PWR_CRIT = 120
 
 # ============ 日志关键字告警 ============
 ALERT_KEYWORDS = [
@@ -103,6 +104,8 @@ class BroadcastTexts:
     ERROR = ["检测到错误日志。", "出现 Error。"]
     HW_GPU_TEMP_CRIT = ["GPU 温度严重告警！{temp} 度！", "GPU 过热！{temp} 度！"]
     HW_GPU_TEMP_WARN = ["GPU {temp} 度，温度偏高。", "GPU 温度 {temp} 度。"]
+    HW_GPU_PWR_CRIT = ["GPU 功耗严重告警！{watt}W！", "GPU 功率过高！{watt}W！"]
+    HW_GPU_PWR_WARN = ["GPU 功耗 {watt}W。", "GPU 功率 {watt}W。"]
     HW_GPU_PWR_HIGH = ["GPU 功耗 {watt}W。", "GPU 功率 {watt}W。"]
     HW_MEM_CRIT = ["内存严重不足！{pct}%！", "内存快满了，{pct}%！"]
     HW_MEM_WARN = ["内存使用偏高，{pct}%。", "内存占用 {pct}%。"]
@@ -371,8 +374,10 @@ def analyze_gpu_temp_lines(lines):
         elif t >= GPU_TEMP_WARN:
             line_alerts.append({"type": "hw_gpu_temp_warn", "severity": 1, "temp": t})
         p = data["gpu_pwr"]
-        if p >= GPU_PWR_HIGH:
-            line_alerts.append({"type": "hw_gpu_pwr_high", "severity": 1, "watt": p})
+        if p >= GPU_PWR_CRIT:
+            line_alerts.append({"type": "hw_gpu_pwr_crit", "severity": 3, "watt": p})
+        elif p >= GPU_PWR_WARN:
+            line_alerts.append({"type": "hw_gpu_pwr_warn", "severity": 1, "watt": p})
         mem_pct = data["mem_used_gb"] / data["mem_total_gb"] * 100
         if mem_pct >= MEM_CRIT_PCT:
             line_alerts.append({"type": "hw_mem_crit", "severity": 3, "pct": mem_pct})
@@ -440,6 +445,7 @@ def decide_slow_broadcast(alerts, state):
                 "vulkan_crash": ("VULKAN_CRASH", {}),
                 "child_crash": ("CHILD_CRASH", {}),
                 "hw_gpu_temp_crit": ("HW_GPU_TEMP_CRIT", {"temp": alert.get("temp", "?")}),
+                "hw_gpu_pwr_crit": ("HW_GPU_PWR_CRIT", {"watt": alert.get("watt", "?")}),
                 "hw_mem_crit": ("HW_MEM_CRIT", {"pct": f"{alert.get('pct', 0):.0f}"}),
             }
             category, kwargs = text_map.get(atype, ("CRITICAL", {}))
@@ -463,6 +469,7 @@ def decide_slow_broadcast(alerts, state):
         atype = alert["type"]
         hw_map = {
             "hw_gpu_temp_warn": ("HW_GPU_TEMP_WARN", {"temp": alert.get("temp", "?")}),
+            "hw_gpu_pwr_warn": ("HW_GPU_PWR_WARN", {"watt": alert.get("watt", "?")}),
             "hw_gpu_pwr_high": ("HW_GPU_PWR_HIGH", {"watt": alert.get("watt", "?")}),
             "hw_mem_warn": ("HW_MEM_WARN", {"pct": f"{alert.get('pct', 0):.0f}"}),
         }

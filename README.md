@@ -8,7 +8,7 @@ Deploy Qwen3.6 large language models on AMD Ryzen AI Max+ 395 (Strix Halo) with 
 
 ## Performance Benchmarks
 
-All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9625 Vulkan). Speeds via API `timings` (server-side, excludes network). Gen speed includes thinking tokens.
+All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X, Radeon 8060S, llama.cpp b9692 Vulkan). Speeds via API `timings` (server-side, excludes network). Gen speed includes thinking tokens.
 
 **Benchmark environment:** CPU governor=performance, `processor.max_cstate=1`, `vm.swappiness=1`, `vm.overcommit_memory=1`, GTT 120GB, mlock=1. These system-level optimizations improve gen speed and prefill stability vs the default powersave governor.
 
@@ -20,29 +20,33 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 
 **Ruled out:** UB=128 (MTP 86%→65%, gen slower); UB≥1024 (p256K prefill -44%, TTFT +80%); Q8_0 KV (dequant overhead > bandwidth savings for sparse KV; all Q8_0 UBs slower than F16 UB=256); UB≥2048 (Vulkan crash at 128K+).
 
-#### F16 KV UB=256 (production config)
+#### F16 KV UB=256 (production config, b9692)
 
-**Generation speed by context length** (201 tasks, cache-ram=65536):
-
-| Context | Tasks | P50 (t/s) | Mean (t/s) |
-|---------|-------|-----------|------------|
-| <4K | 5 | 55.4 | 59.5 |
-| 4–16K | 3 | 50.3 | 53.2 |
-| 16–64K | 46 | 55.2 | 55.9 |
-| 64–130K | 132 | 48.1 | 48.0 |
-| 130–200K | 15 | 43.7 | 43.0 |
-
-**Prefill speed by context length** (cold start, cache-ram=65536):
+**Generation speed by context length** (1468 tasks, cache-ram=65536):
 
 | Context | Tasks | P50 (t/s) | Mean (t/s) |
 |---------|-------|-----------|------------|
-| <4K | 4 | 453.8 | 470.8 |
-| 4–16K | 2 | 418.0 | 418.0 |
-| 16–64K | 33 | 313.9 | 299.0 |
-| 64–130K | 104 | 236.0 | 235.7 |
-| 130–200K | 14 | 222.9 | 218.8 |
+| <4K | 1227 | 53.3 | 52.8 |
+| 4–16K | 171 | 48.3 | 49.0 |
+| 16–64K | 48 | 47.2 | 48.3 |
+| 64–130K | 18 | 44.2 | 45.0 |
+| 130–200K | 4 | 37.8 | 37.9 |
 
-> Production workload log data (F16 KV, UB=256, cache-ram=65536, llama.cpp b9625). MTP acceptance: mean 83.7%, median 85.7%. KV cache at ~130K tokens: ~318 MiB (~2.4 KB/token due to MoE sparse heads). Checkpoint eviction observed (143 erased/225 created), indicating cache-ram is adequate for single-conversation workloads but cross-conversation cache reuse limited by Qwen3 SWA architecture.
+**Prefill speed by prompt length** (1083 tasks, tokens ≥ 100, cache-ram=65536):
+
+| Prompt | Tasks | P50 (t/s) | Mean (t/s) |
+|--------|-------|-----------|------------|
+| <1K | 625 | 240.8 | 251.6 |
+| 1K–5K | 235 | 312.1 | 316.4 |
+| 5K–10K | 102 | 290.4 | 290.5 |
+| 10K–30K | 79 | 305.7 | 337.8 |
+| 30K–60K | 17 | 347.7 | 356.6 |
+| 60K–130K | 21 | 407.9 | 365.0 |
+| 130K+ | 4 | 309.7 | 309.6 |
+
+> Production workload log data (F16 KV, UB=256, cache-ram=65536, llama.cpp b9692). MTP acceptance: mean 86.8%, median 88.2%. KV cache at ~130K tokens: ~318 MiB (~2.4 KB/token due to MoE sparse heads). Checkpoint eviction observed (143 erased/225 created), indicating cache-ram is adequate for single-conversation workloads but cross-conversation cache reuse limited by Qwen3 SWA architecture.
+>
+> **Historical reference (b9625, 201 tasks):** Gen P50: <4K=55.4, 4–16K=50.3, 16–64K=55.2, 64–130K=48.1, 130–200K=43.7. Cold-start prefill P50: <4K=453.8, 4–16K=418.0, 16–64K=313.9, 64–130K=236.0, 130–200K=222.9. Gen speed nearly identical across b9625/b9692; prefill P50 lower in b9692 data due to higher cache-hit ratio in larger sample (old data was cold-start only).
 >
 > **Historical reference (F16 KV UB=512, superseded):** p128=56.7, p4K=56.7, p32K=50.1, p64K=46.7, p128K=38.0, p256K=28.4 t/s gen; 371–931 t/s prefill. Gen speed nearly identical across UB=256/512 (±2 t/s); UB choice mainly affects prefill/TTFT.
 
@@ -109,32 +113,44 @@ Dense model — all 27B params active per token. Current Hermes default model.
 
 **Ruled out:** Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); Q4_0 KV (Vulkan dequantization overhead negates bandwidth savings); UB≥1024 (long-context prefill degradation 11–34%); UB≥2048 (Vulkan crash).
 
-#### F16 KV UB=256 (current config, b9625)
+#### F16 KV UB=256 (current config, b9692)
 
-**Generation speed by response length** (378 tasks, decoded ≥ 100 tokens):
+**Generation speed by response length** (1001 tasks, decoded ≥ 100 tokens):
 
 | Response length | Tasks | Avg (t/s) | P50 (t/s) |
 |----------------|-------|----------|----------|
-| <200 tokens | 92 | 11.7 | 11.9 |
-| 200–500 | 145 | 12.0 | 12.1 |
-| 500–1K | 66 | 10.8 | 10.4 |
-| 1K–3K | 53 | 10.2 | 10.2 |
-| 3K–5K | 13 | 10.1 | 10.0 |
-| 5K+ | 9 | 9.2 | 8.8 |
+| <200 tokens | 237 | 11.6 | 11.7 |
+| 200–500 | 395 | 11.7 | 11.8 |
+| 500–1K | 178 | 10.7 | 10.5 |
+| 1K–3K | 149 | 10.7 | 10.4 |
+| 3K–5K | 23 | 10.7 | 10.8 |
+| 5K+ | 19 | 10.0 | 10.0 |
 
-**Prefill speed by prompt length** (413 complete tasks, tokens ≥ 100):
+**Generation speed by context length** (1183 tasks):
+
+| Context | Tasks | P50 (t/s) | Mean (t/s) |
+|---------|-------|-----------|------------|
+| <4K | 837 | 10.9 | 11.2 |
+| 4–16K | 258 | 11.8 | 11.8 |
+| 16–64K | 71 | 12.7 | 12.3 |
+| 64–130K | 13 | 10.0 | 10.2 |
+| 130–200K | 4 | 8.5 | 8.5 |
+
+**Prefill speed by prompt length** (1033 tasks, tokens ≥ 100):
 
 | Prompt length | Tasks | Avg (t/s) | P50 (t/s) |
 |--------------|-------|----------|----------|
-| <1K | 119 | 50 | 28 |
-| 1K–5K | 147 | 71 | 30 |
-| 5K–10K | 67 | 79 | 44 |
-| 10K–30K | 65 | 132 | 149 |
-| 30K–60K | 5 | 62 | 57 |
-| 60K–130K | 6 | 91 | 98 |
-| 130K+ | 4 | 46 | 46 |
+| <1K | 397 | 60.5 | 38.1 |
+| 1K–5K | 333 | 78.9 | 40.2 |
+| 5K–10K | 147 | 84.9 | 54.0 |
+| 10K–30K | 126 | 122.0 | 132.6 |
+| 30K–60K | 13 | 91.1 | 93.2 |
+| 60K–130K | 13 | 78.8 | 63.9 |
+| 130K+ | 4 | 39.9 | 39.3 |
 
-> † Production workload log data (F16 KV, UB=256, cache-ram=49152, llama.cpp b9625, 378 gen + 413 prefill tasks). Gen speed includes thinking tokens. Short/medium context: gen stable at 11–13 t/s; long context (5K+ decoded): 8–10 t/s. Prefill varies widely with cache-hit rate; short contexts (<5K) show low P50 due to incremental cache-hit prefills. True cold prefill at 16K+: 150–226 t/s (median ~200 t/s). At 130K+: ~45 t/s.
+> † Production workload log data (F16 KV, UB=256, cache-ram=49152, llama.cpp b9692, 1001 gen + 1033 prefill tasks). Gen speed includes thinking tokens. Short/medium context: gen stable at 11–13 t/s; long context (5K+ decoded): 8–10 t/s. Prefill varies widely with cache-hit rate; short contexts (<5K) show low P50 due to incremental cache-hit prefills. True cold prefill at 16K+: 150–226 t/s (median ~200 t/s). At 130K+: ~45 t/s. MTP acceptance: mean 87.1%, median 89.2%.
+>
+> **Historical reference (b9625, 378 gen + 413 prefill tasks):** Gen avg by response: <200=11.7, 200–500=12.0, 500–1K=10.8, 1K–3K=10.2, 3K–5K=10.1, 5K+=9.2. Prefill avg by prompt: <1K=50, 1K–5K=71, 5K–10K=79, 10K–30K=132, 30K–60K=62, 60K–130K=91, 130K+=46. Gen speed consistent across b9625→b9692; prefill shows similar patterns with larger sample.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 
@@ -362,10 +378,10 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880 processor.max_cs
 |-----------|-------------------|
 | Inference OS | Ubuntu 26.04 LTS |
 | Cloud OS | Ubuntu 24.04.4 LTS |
-| llama.cpp | b9625 (commit f05cf4676, Vulkan backend) |
+| llama.cpp | b9692 (commit 35b1d5791, Vulkan backend) |
 | Build options | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` |
 
-> ⚠️ **Version upgraded from b9315 → b9592 (2026-06-11) → b9617 (2026-06-13) → b9625 (2026-06-14).** Notable changes: Vulkan contiguous buffer fast path (#23973), Vulkan memcpy pipeline barriers (#23770), server checkpoint pos_next fix (#24411), reasoning-budget WebUI precedence fix (#24517), router mode log cleanup (#24463), Vulkan non-contig unary/glu ops fix (#24215), Jinja template bug fixes (#24574, #24580), server UI static asset refactor (#24550). Commit `6c4cbdc70` ("server: MTP layer kv-cache should respect draft type ctk") is still present in b9592, but the current deployment uses default F16 KV cache (no explicit `cache-type-k`/`cache-type-v` in INI), so this bug **does not trigger**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) is re-enabled. Do not enable quantized KV on the Vulkan backend until upstream fixes this.
+> ⚠️ **Version upgraded from b9315 → b9592 (2026-06-11) → b9617 (2026-06-13) → b9625 (2026-06-14) → b9692 (2026-06-18).** Notable changes: Vulkan contiguous buffer fast path (#23973), Vulkan memcpy pipeline barriers (#23770), server checkpoint pos_next fix (#24411), reasoning-budget WebUI precedence fix (#24517), router mode log cleanup (#24463), Vulkan non-contig unary/glu ops fix (#24215), Jinja template bug fixes (#24574, #24580), server UI static asset refactor (#24550), Vulkan host-visible memory buffers on UMA. Commit `6c4cbdc70` ("server: MTP layer kv-cache should respect draft type ctk") is still present, but the current deployment uses default F16 KV cache (no explicit `cache-type-k`/`cache-type-v` in INI), so this bug **does not trigger**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) is re-enabled. Do not enable quantized KV on the Vulkan backend until upstream fixes this.
 | Vulkan runtime | 1.4.341 |
 | API protocol | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) |
 
@@ -1019,7 +1035,7 @@ spec-draft-n-max = 3
 
 **Root cause:** MTP draft KV cache with quantized types triggers a Vulkan driver bug in radv/amdgpu. Long-context scenarios (≥64K tokens) with high-frequency GPU submissions cause device context loss. The bug is in the interaction between quantized MTP KV cache and the Vulkan memory management — not in the commit's logic itself, but the commit exposes the latent bug.
 
-**Workaround:** Upgraded to b9625 (F16 KV does not trigger this bug). Do **not** enable quantized KV types until upstream addresses the Vulkan + quantized KV cache interaction.
+**Workaround:** Upgraded to b9692 (F16 KV does not trigger this bug). Do **not** enable quantized KV types until upstream addresses the Vulkan + quantized KV cache interaction.
 
 **Upstream tracking:** No issue filed yet. The regression is specific to Vulkan backend + MTP + quantized KV; other backends (CPU/CUDA/Metal) are unaffected.
 
@@ -1083,4 +1099,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9625 Vulkan · 2026-06-03 · Updated 2026-06-14 (single-model mode, cache-ram 49152/65536, Hermes v0.16.0, timeout 7200s)*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9692 Vulkan · 2026-06-03 · Updated 2026-06-20 (b9692 perf data, cache-ram 49152/65536, Hermes v0.15.2, timeout 7200s)*

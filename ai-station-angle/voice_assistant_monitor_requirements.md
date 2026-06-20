@@ -1,12 +1,12 @@
 # 语音助手与硬件监控播报系统需求文档
 
-> **实现状态（2026-06-19）**
-> - ✅ 监控播报链路：已上线运行（`monitor-broadcast.service`）
-> - ✅ TTS 语音合成：Qwen3-TTS 1.7B 已部署（port 9900）
-> - ✅ 音频播放：ALSA card1 扬声器，`systemd-run --user --no-block aplay`
-> - ⚠️ ASR：模型已部署但 API 格式未调通（`type: "audio"` 返回 400）
+> **实现状态（2026-06-21）**
+> - ✅ 监控播报链路：已上线运行（`monitor-broadcast.service` v6）
+> - ✅ TTS 语音合成：Qwen3-TTS 1.7B 已部署（port 9900，音色 vivian）
+> - ✅ 音频播放：ALSA card1 扬声器，流式预缓冲 + FIFO 管道
+> - ✅ TTS 播放策略：流式预缓冲 80%，无非流式 fallback（生产版已移除 `_speak_wav`）
+> - ⚠️ ASR：模型已部署（port 48091）但 API 格式未调通（`type: "audio"` 返回 400）
 > - ❌ 语音助手链路：未开始开发
-> - 📝 TTS 0.6B 模型已删除，仅保留 1.7B
 
 ## 1. 项目概述
 构建一个运行在推理机上的**纯 CPU 语音交互与监控播报系统**。系统包含两条独立但共享 TTS 资源的核心链路：
@@ -33,11 +33,8 @@ graph TD
     end
     
     subgraph TTS_Engine [TTS 引擎 (CPU)]
-        Reply --> TTS_Select{TTS 模型选择}
-        TTS_Select -- 默认 --> TTS_1_7B[Qwen3-TTS 1.7B-Base]
-        TTS_Select -- 降级/快速 --> TTS_0_6B[Qwen3-TTS 0.6B-Base]
+        Reply --> TTS_1_7B[Qwen3-TTS 1.7B-Base (vivian)]
         TTS_1_7B --> Audio[语音输出]
-        TTS_0_6B --> Audio
     end
     
     subgraph Monitor_Thread [监控播报线程 (独立)]
@@ -72,22 +69,17 @@ graph TD
 *   **并发控制**：确保同一时间只有一个用户请求占用 LLM（或根据 LLM 服务的并发能力配置）。
 
 #### 3.1.3 TTS 语音合成
-*   **推理底座**：**纯 C 语言推理引擎 (qwen3-tts)**。
-    *   基于 Gabriele Mastrapasqua 开源方案，利用 SIMD 指令集（x86 AVX）深度优化。
-    *   无 Python/PyTorch 运行时依赖，极致轻量，专为 CPU 推理设计。
-*   **主模型**：**Qwen3-TTS-12Hz-1.7B-Base**。
-    *   默认使用，音质优先。已部署为 systemd 用户服务（port 9900）。
-*   ~~**兜底模型**：**Qwen3-TTS-12Hz-0.6B-Base**。~~
-    *   0.6B 模型已删除（2026-06-13），仅保留 1.7B。RTF ~1.8-2.5 可接受。
-*   **声音克隆 (Voice Clone)**：
-    *   支持加载 3 秒参考音频，Base 模型进行零样本克隆。
-    *   需管理参考音频缓存，避免重复加载。
-*   **声音设计 (Voice Design)**：
-    *   偶尔使用，通过自然语言描述生成自定义音色。
-    *   提供独立接口触发，生成后可保存为预设音色供后续 Clone 使用。
+*   **推理底座**：Qwen3-TTS 服务（Python HTTP 服务，基于 llama.cpp GGUF 推理）。
+    *   模型：Qwen3-TTS-12Hz-1.7B-Base，已部署为 systemd 用户服务（port 9900）。
+    *   音色：vivian (中文女声)，volume=1.0，language=chinese。
+    *   监控播报通过 HTTP 调用 `/v1/tts/stream` 端点获取流式 PCM 数据。
+    *   ⚠️ 需求文档原文提到的「纯 C 语言推理引擎」方案未实际采用，当前为 llama.cpp GGUF + Python 服务。
+*   **声音克隆 / 声音设计**：
+    *   规划中的功能，当前未实现。TTS 服务支持相关 API 但监控播报未使用。
 *   **流式输出**：
     *   `/v1/tts/stream` 端点已验证可用（HTTP 200, 49KB, 2.14s）。
-    *   当前监控播报使用非流式（先下载完整 WAV 再播放），后续语音助手链路可改用流式实现边生成边播放。
+    *   监控播报已采用流式预缓冲模式：估算音频时长 → 预填 80% 缓冲区 → 创建 FIFO 管道 → 启动 `aplay` 边生成边播放。
+    *   生产版已移除非流式 fallback（`_speak_wav`），流式失败时跳过本次播报。
 
 ### 3.2 监控播报线程 (Kernel Log Speaker)
 
@@ -107,10 +99,10 @@ graph TD
 #### 3.2.2 播报逻辑（✅ 已实现）
 *   **独立线程**：与语音助手链路隔离，互不阻塞。已部署为 `monitor-broadcast.service`。
 *   **双频率轮询**：
-    *   快速轮询（30s）：模型切换 + 推理任务全生命周期（启动/prefill完成/生成里程碑/结束/空闲）。
-    *   慢速轮询（300s）：硬件告警 + 日志 E/F 级别 + 日常播报（1h 间隔）。
+    *   快速轮询（180s）：模型切换 + 推理任务全生命周期（启动/prefill完成/生成里程碑/结束/空闲）。
+    *   慢速轮询（300s）：硬件告警 + 日志 E/F 级别 + 日常播报（30min 间隔）。
 *   **触发条件**：
-    *   *阈值报警*：GPU 温度 > 80°C（警告）/ 90°C（严重），内存 > 80%（警告）/ 90%（严重），GPU 功耗 > 100W（警告）/ 120W（严重）。
+    *   *阈值报警*：GPU 温度 > 80°C（警告）/ 90°C（严重），内存 > 80%（警告）/ 90%（严重），GPU 功耗 > 120W（警告）/ 130W（严重）。
     *   *关键字报警*：日志中出现 OOM、Xid、段错误、Vulkan 崩溃（`vk::DeviceLostError`）、Fatal、Error（E 级别）等。
 *   **播报策略**：
     *   **去重**：同类严重告警 5 分钟内不重复播报。
@@ -125,16 +117,15 @@ graph TD
 *   **ASR 延迟**：< 500ms (GGUF CPU 推理)。
 *   **LLM 响应**：取决于模型大小，调度器需保证队列不溢出。
 *   **TTS RTF (CPU/APU)**：
-    *   1.7B 目标：**RTF < 2** (纯 C 引擎 + AVX 优化)。
-    *   0.6B 目标：**RTF < 1** (争取实时)。
-    *   *优化*：利用 APU 的 AVX2/AVX-512 指令集，最大化 SIMD 并行计算效率。
+    *   1.7B 实测：**RTF ~1.8-2.5**（纯 CPU 8 线程，llama.cpp GGUF 推理）。
+    *   *注*：需求原文提到的「纯 C 引擎 + AVX 优化」方案未实际采用，当前为 llama.cpp GGUF 推理。
 *   **首包延迟**：TTS 首包音频生成时间 < 1s。
 
 ### 4.2 资源管理
 *   **128GB 统一内存**：
     *   推理机配备 128GB 统一内存。虽然大模型部署占用了大部分，但**空余内存依然充足**，足以容纳 TTS 模型加载。
-    *   1.7B TTS 模型加载约需 12GB RAM，0.6B 约需 4-6GB RAM。
-    *   内存不再是瓶颈，但仍需实现**模型热切换**或**按需加载**，避免同时加载两个大模型造成不必要的资源浪费。
+    *   1.7B TTS 模型加载约需 12GB RAM。
+    *   内存不再是瓶颈。
 *   **并发**：支持至少 1 个用户对话 + 1 个监控播报并发。
 
 ### 4.3 可靠性
@@ -150,7 +141,7 @@ graph TD
 | **语言** | Python 3.10+ | 生态丰富 |
 | **Web 框架** | FastAPI | 异步支持好，适合 API 服务 |
 | **ASR** | llama.cpp / Qwen3-ASR GGUF | 现有部署 |
-| **TTS** | C/C++ (qwen3-tts engine) | 纯 C 推理，AVX/SIMD 优化，无 Python 依赖 |
+| **TTS** | llama.cpp GGUF (Qwen3-TTS-1.7B) | systemd 用户服务 port 9900，HTTP API 调用 |
 | **LLM 客户端** | HTTP Client / vLLM API | 调用 35B/27B |
 | **监控采集** | `psutil`, `tail -f`, `regex` | 读取 CPU/内存指标 + 实时解析大模型部署 `logs/` 目录日志 |
 | **任务队列** | `asyncio.Queue` / `Redis` | 本地内存队列即可 |
@@ -199,9 +190,7 @@ Content-Type: multipart/form-data
     *   RAM：**128GB 统一内存**（大模型部署占用大部分，空余内存充足，完全满足 TTS 模型加载需求）。
 *   **依赖安装**：
     ```bash
-    # 编译纯 C TTS 引擎
-    git clone https://github.com/gabriele-mastrapasqua/qwen3-tts.git
-    cd qwen3-tts && cmake -B build && cmake --build build --config Release -j
+    # TTS 服务已在推理机上部署为 systemd 用户服务
     # Python 调度器依赖
     pip install fastapi uvicorn psutil pyaudio
     ```
@@ -209,7 +198,7 @@ Content-Type: multipart/form-data
 ---
 
 ## 8. 后续优化方向
-1.  **TTS 量化**：若 1.7B CPU 速度不达标，尝试 INT8/INT4 量化版本，进一步压榨 APU 性能。
+1.  **TTS 性能优化**：当前 RTF ~1.8-2.5（纯 CPU 8 线程），如需更低延迟可尝试 INT8/INT4 量化版本或增加线程数。
 2.  **LLM 并发**：若 LLM 支持并发，调度器改为令牌桶限流。
 3.  **多音色管理**：建立音色库，支持按角色切换播报音色。
-4.  **纯 CPU 极致优化**：TTS 永远只依赖 APU CPU 算力，后续优化将集中在 C 引擎的 AVX-512 指令集适配与内存带宽优化上，不再考虑 GPU 辅助方案。
+4.  **纯 CPU 极致优化**：如后续需要，可探索 AVX-512 指令集适配与内存带宽优化，或切换到纯 C 推理引擎方案。

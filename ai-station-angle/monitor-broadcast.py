@@ -1,13 +1,24 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-监控播报系统 v2 - LLM Log Monitor + Hardware Speaker
+监控播报系统 v6 - LLM Log Monitor + Hardware Speaker
 
 双频率轮询：
-  - 快速轮询 (30s): 模型切换 + 推理任务状态变化（开始/prefill完成/结束/空闲）
+  - 快速轮询 (180s): 模型切换 + 推理任务状态变化（开始/prefill完成/结束/空闲）
   - 慢速轮询 (300s): 硬件告警 + 日志 E/F 级别 + 日常播报
 
-TTS 缓冲队列：播报中时新消息排队，按优先级发送。
+TTS 播放策略：
+  - 所有文本走流式预缓冲 - 预填 80% 缓冲区，再启动 aplay 边生成边播放
+  - 所有 TTS 请求强制 language=chinese + ensure_ascii=False
+  - 日常播报包含 CPU 负载、GPU 负载、温度、内存信息
+  - 任务编号逐位中文朗读
+
+音量四级控制（set-audio-volume.sh）：
+  1. TTS 引擎音量: TTS_VOLUME = 1.0 (API 参数)
+  2. ALSA PCM 音量: 100% (aplay 直出通道)
+  3. ALSA Speaker/Headphone: 100% (播放通道)
+  4. ALSA Master: 100% (系统主音量)
 """
+import http.client
 import json
 import os
 import random
@@ -15,10 +26,8 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -31,22 +40,29 @@ ROUTER_LOG = LOG_DIR / "llama" / "router.log"
 GPU_TEMP_LOG = LOG_DIR / "gpu-temp.log"
 STATE_FILE = Path("/home/zxw/.config/monitor-broadcast/state.json")
 TTS_URL = "http://127.0.0.1:9900/v1/tts"
-TTS_SPEAKER = 3061
-TTS_VOLUME = 0.3          # 30% 音量
+TTS_SPEAKER = "vivian"    # 中文女声
+TTS_VOLUME = 1.0          # TTS 引擎音量 100%
 
-FAST_POLL = 30            # 快速轮询 30s（模型切换 + 任务状态）
-SLOW_POLL = 60            # 慢速轮询 60s（硬件 + 日志告警 + 日常）
+# TTS 音频参数
+TTS_SAMPLE_RATE = 24000    # 采样率 Hz
+TTS_BYTES_PER_SEC = TTS_SAMPLE_RATE * 2  # 16-bit mono = 48000 B/s
+
+FAST_POLL = 180           # 高频轮询 3 分钟（模型切换 + 任务状态）
+SLOW_POLL = 300           # 低频轮询 5 分钟（硬件 + 日志告警 + 日常）
 COOLDOWN = 300            # 非严重告警全局冷却 5 分钟
 ALERT_DEDUP = 300         # 同类严重告警去重 5 分钟
-DAILY_INTERVAL = 3600     # 日常播报 1 小时
+DAILY_INTERVAL = 1800     # 日常播报 30 分钟
+
+# TTS 队列最大长度，超过直接丢弃不入队
+TTS_QUEUE_MAX = 3
 
 # ============ 硬件阈值 ============
 GPU_TEMP_WARN = 80
 GPU_TEMP_CRIT = 90
 MEM_WARN_PCT = 80
 MEM_CRIT_PCT = 90
-GPU_PWR_WARN = 100
-GPU_PWR_CRIT = 120
+GPU_PWR_WARN = 120
+GPU_PWR_CRIT = 130
 
 # ============ 日志关键字告警 ============
 ALERT_KEYWORDS = [
@@ -60,20 +76,13 @@ ALERT_KEYWORDS = [
 ]
 
 # ============ 任务/模型正则 ============
-# [PORT] TIMESTAMP I slot launch_slot_: id  0 | task 52073 | processing task, is_child = 0
 TASK_LAUNCH_RE = re.compile(r'launch_slot_.*?task\s+(\d+)')
-# [PORT] TIMESTAMP I slot      release: id  0 | task 52073 | stop processing: n_tokens = 104437
 TASK_RELEASE_RE = re.compile(r'release:.*?task\s+(\d+).*?n_tokens\s*=\s*(\d+)')
-# [PORT] TIMESTAMP I slot print_timing: id  0 | task 52073 | prompt eval time =     931.84 ms /   217 tokens
 TASK_PREFILL_RE = re.compile(r'print_timing.*?task\s+(\d+).*?prompt eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens')
-# [PORT] TIMESTAMP I slot print_timing: id  0 | task 52073 | n_decoded =   6630, tg =  50.15 t/s
 TASK_GEN_RE = re.compile(r'print_timing.*?task\s+(\d+).*?n_decoded\s*=\s*(\d+).*?tg\s*=\s*([\d.]+)')
-# all slots are idle
 TASK_IDLE_RE = re.compile(r'all slots are idle')
-# proxying request to model Qwen3.6-35B-A3B-UD-Q8_K_XL on port 60425
 MODEL_PROXY_RE = re.compile(r'proxying request to model\s+(.+?)\s+on port\s+(\d+)')
 
-# gpu-temp.log 格式
 GPU_TEMP_LOG_RE = re.compile(
     r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*'
     r'GPU\s+(\d+)°C.*?'
@@ -90,8 +99,6 @@ def _handle_sigterm(signum, frame):
     global _running
     _running = False
     print(f"[Monitor] 收到信号 {signum}，准备退出...")
-
-
 # ============ 播报文案 ============
 class BroadcastTexts:
     OOM = ["严重警告！显存溢出！", "紧急！OOM 告警！"]
@@ -102,18 +109,15 @@ class BroadcastTexts:
     VULKAN_CRASH = ["Vulkan 崩溃！", "GPU 驱动异常！"]
     CHILD_CRASH = ["子进程崩溃！", "推理进程异常退出！"]
     ERROR = ["检测到错误日志。", "出现 Error。"]
-    HW_GPU_TEMP_CRIT = ["GPU 温度严重告警！{temp} 度！", "GPU 过热！{temp} 度！"]
-    HW_GPU_TEMP_WARN = ["GPU {temp} 度，温度偏高。", "GPU 温度 {temp} 度。"]
-    HW_GPU_PWR_CRIT = ["GPU 功耗严重告警！{watt}W！", "GPU 功率过高！{watt}W！"]
-    HW_GPU_PWR_WARN = ["GPU 功耗 {watt}W。", "GPU 功率 {watt}W。"]
-    HW_GPU_PWR_HIGH = ["GPU 功耗 {watt}W。", "GPU 功率 {watt}W。"]
+    HW_GPU_TEMP_CRIT = ["温度严重告警！{temp} 度！", "设备过热！{temp} 度！"]
+    HW_GPU_TEMP_WARN = ["温度 {temp} 度，偏高。", "温度 {temp} 度。"]
+    HW_GPU_PWR_CRIT = ["功耗严重告警！{watt} 瓦！", "功率过高！{watt} 瓦！"]
+    HW_GPU_PWR_WARN = ["功耗 {watt} 瓦。", "功率 {watt} 瓦。"]
+    HW_GPU_PWR_HIGH = ["功耗 {watt} 瓦。", "功率 {watt} 瓦。"]
     HW_MEM_CRIT = ["内存严重不足！{pct}%！", "内存快满了，{pct}%！"]
     HW_MEM_WARN = ["内存使用偏高，{pct}%。", "内存占用 {pct}%。"]
 
-    # 模型切换
     MODEL_SWITCH = ["模型已切换到 {model}。", "当前模型：{model}。"]
-
-    # 任务状态
     TASK_START = ["新任务 {task_id}，开始推理。", "任务 {task_id} 启动。"]
     TASK_PREFILL = ["任务 {task_id}，预填充完成，{tokens} 个 token，速度 {speed} t/s。"]
     TASK_DONE = ["任务 {task_id} 完成，共 {tokens} 个 token。", "任务 {task_id} 结束。"]
@@ -132,9 +136,147 @@ class BroadcastTexts:
         return text.format(**kwargs) if kwargs else text
 
 
+# ============ 数字转中文朗读 ============
+def num_to_chinese(n):
+    """将数字逐位转中文，用于任务编号朗读。
+    例如 26640 -> 二六六四零
+    """
+    cn_digits = '零一二三四五六七八九'
+    return ''.join(cn_digits[int(d)] for d in str(n))
+
+
+# ============ 系统状态采集 ============
+def get_cpu_load():
+    """获取系统负载 (1min)"""
+    try:
+        with open("/proc/loadavg", "r") as f:
+            parts = f.read().split()
+        return float(parts[0])
+    except Exception:
+        return None
+
+
+def get_cpu_temp():
+    """获取 CPU 温度 (°C)，作为 APU 温度 fallback"""
+    try:
+        for tz in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
+            type_file = tz / "type"
+            temp_file = tz / "temp"
+            if type_file.exists() and temp_file.exists():
+                ttype = type_file.read_text().strip().lower()
+                if "x86" in ttype or "cpu" in ttype:
+                    temp = int(temp_file.read_text().strip()) / 1000
+                    return round(temp, 1)
+        for tz in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
+            temp_file = tz / "temp"
+            if temp_file.exists():
+                temp = int(temp_file.read_text().strip()) / 1000
+                return round(temp, 1)
+    except Exception:
+        pass
+    return None
+
+
+def get_system_memory():
+    """获取内存使用率"""
+    try:
+        with open("/proc/meminfo", "r") as f:
+            info = {}
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].rstrip(":")
+                    info[key] = int(parts[1])
+        total = info.get("MemTotal", 1)
+        available = info.get("MemAvailable", 0)
+        used_pct = round((1 - available / total) * 100, 1)
+        return used_pct
+    except Exception:
+        return None
+
+
+def get_last_gpu_status():
+    """从 gpu-temp.log 读取最新一行"""
+    try:
+        with open(GPU_TEMP_LOG, "r") as f:
+            lines = f.readlines()
+        for line in reversed(lines):
+            m = GPU_TEMP_LOG_RE.search(line)
+            if m:
+                return {
+                    "gpu_temp": int(m.group(2)),
+                    "gpu_busy": int(m.group(3)),
+                    "gpu_pwr": int(m.group(4)),
+                    "mem_used_gb": float(m.group(5)),
+                    "mem_total_gb": float(m.group(6)),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def build_daily_report():
+    """构建日常播报文案（CPU 负载、GPU 负载、温度、内存）"""
+    parts = []
+
+    # CPU 负载
+    cpu_load = get_cpu_load()
+    if cpu_load is not None:
+        parts.append(f"CPU 负载 {cpu_load:.2f}")
+
+    # GPU 负载 + 温度（APU 统一架构）
+    gpu = get_last_gpu_status()
+    if gpu:
+        parts.append(f"GPU {gpu['gpu_busy']}%")
+        parts.append(f"温度 {gpu['gpu_temp']} 度")
+    else:
+        cpu_temp = get_cpu_temp()
+        if cpu_temp is not None:
+            parts.append(f"温度 {cpu_temp} 度")
+
+    # 内存
+    mem_pct = get_system_memory()
+    if mem_pct is not None:
+        parts.append(f"内存 {mem_pct}%")
+
+    if not parts:
+        return None
+    return "，".join(parts) + "。"
+
+
+# ============ 语音时长估算 ============
+def estimate_audio_duration(text):
+    """根据文本估算语音时长（秒）。
+    中文语速约 3-4 字/秒，英文约 15 词/秒。
+    数字和特殊符号占用更多时间。
+    """
+    duration = 0.0
+    for m in re.finditer(r'\d+\.?\d*', text):
+        duration += len(m.group()) * 0.15
+    no_num = re.sub(r'\d+\.?\d*', '', text)
+    cn_count = sum(1 for ch in no_num if '\u4e00' <= ch <= '\u9fff')
+    en_count = sum(1 for ch in no_num if ch.isascii() and ch.isalpha())
+    other = len(no_num) - cn_count - en_count
+    duration += cn_count * 0.30 + en_count * 0.04 + other * 0.08
+    return max(duration, 0.5)
+# ============ TTS 请求工具 ============
+def _build_tts_payload(text):
+    """构建 TTS 请求 payload，强制中文语言。
+    ensure_ascii=False 关键：让中文字符以 UTF-8 字节直接发送，
+    而不是转成 unicode 转义序列。
+    """
+    return json.dumps({
+        "text": text,
+        "speaker": TTS_SPEAKER,
+        "volume": TTS_VOLUME,
+        "language": "chinese",
+    }, ensure_ascii=False).encode("utf-8")
+
+
+
 # ============ TTS 队列 ============
 class TTSQueue:
-    """TTS 播报队列，单线程发送，避免并发请求。"""
+    """TTS 播报队列，单线程发送。"""
 
     def __init__(self):
         self._queue = deque()
@@ -143,15 +285,16 @@ class TTSQueue:
         self._sent_count = 0
 
     def start(self):
-        self._worker = threading.Thread(target=self._run, daemon=True)
+        self._worker = threading.Thread(target=self._run, daemon=True, name="tts-worker")
         self._worker.start()
 
     def put(self, text, priority=0, tag=""):
-        """入队。priority 越高越优先。"""
+        """入队。队列满时直接丢弃，不入队。"""
         with self._lock:
-            # 严重告警插队到队列头部（但在已有的高优先级之后）
+            if len(self._queue) >= TTS_QUEUE_MAX:
+                print(f'[Queue] 丢弃: "{text[:40]}" (队列已满 {TTS_QUEUE_MAX} 条)')
+                return
             if priority >= 3:
-                # 找到第一个 priority < 3 的位置插入
                 idx = 0
                 for i, item in enumerate(self._queue):
                     if item[1] < 3:
@@ -163,7 +306,7 @@ class TTSQueue:
             else:
                 self._queue.append((text, priority, tag))
             qsize = len(self._queue)
-        print(f"[Queue] +\"{text[:40]}\" (pri={priority}, qsize={qsize})")
+        print(f'[Queue] +"{text[:40]}" (pri={priority}, qsize={qsize})')
 
     def _run(self):
         while _running:
@@ -179,44 +322,127 @@ class TTSQueue:
             self._sent_count += 1
 
     def _speak(self, text):
-        payload = json.dumps({
-            "text": text,
-            "speaker": TTS_SPEAKER,
-            "volume": TTS_VOLUME,
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            TTS_URL, data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        """TTS 合成 + 播放。所有文本走流式预缓冲。"""
+        self._speak_prebuffer(text)
+
+    def _speak_prebuffer(self, text):
+        """流式预缓冲 TTS：先估算时长，预填 80% 缓冲，再启动 aplay 边生成边播放。
+
+        流程：
+        1. 发起 TTS 流式请求 (raw PCM)
+        2. 数据先积累到内存 prebuffer，达到 80% 时长目标
+        3. 创建 FIFO，启动 aplay 从 FIFO 读取（O_RDONLY 阻塞直到有写入者）
+        4. 后台线程：把 prebuffer 写入 FIFO，然后持续把 TTS 流式数据写入 FIFO
+        5. TTS 完成后关闭 FIFO 写端，aplay 读完自动退出
+        """
+        est_duration = estimate_audio_duration(text)
+        # 预缓冲目标：80% 时长，最少 2 秒（应对 RTF 高的情况）
+        prebuffer_sec = max(est_duration * 0.8, 2.0)
+        prebuffer_bytes = int(prebuffer_sec * TTS_BYTES_PER_SEC)
+        # 限制范围：32KB ~ 1MB
+        prebuffer_bytes = max(32 * 1024, min(1024 * 1024, prebuffer_bytes))
+
+        print(f"[TTS] 流式: \"{text[:50]}\" (估时 {est_duration:.1f}s, 预缓冲 {prebuffer_sec:.1f}s / {prebuffer_bytes} bytes)")
+
+        payload = _build_tts_payload(text)
+        t0 = time.time()
+        fifo_path = None
+
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                wav = resp.read()
-            # 写临时 WAV 文件
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                f.write(wav)
-                wav_path = f.name
-            # 用 systemd-run --user --no-block 播放，完全脱离当前进程
-            subprocess.run(
-                ["systemd-run", "--user", "--no-block",
-                 "aplay", "-q", "-D", "plughw:1,0", wav_path],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            conn = http.client.HTTPConnection("127.0.0.1", 9900, timeout=120)
+            conn.request("POST", "/v1/tts/stream",
+                         body=payload,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+
+            if resp.status != 200:
+                body = resp.read()
+                print(f"[TTS] HTTP {resp.status}: {body[:200]}")
+                conn.close()
+                return
+
+            # Phase 1: 预缓冲 - 积累数据到内存
+            prebuffer = bytearray()
+            while len(prebuffer) < prebuffer_bytes:
+                chunk = resp.read(32768)
+                if not chunk:
+                    break
+                prebuffer.extend(chunk)
+
+            prebuffer_time = time.time() - t0
+            prebuffer_audio_sec = len(prebuffer) / TTS_BYTES_PER_SEC
+            print(f"[Prebuf] 预缓冲完成: {len(prebuffer)} bytes ({prebuffer_audio_sec:.2f}s audio), 耗时 {prebuffer_time:.1f}s")
+
+            # Phase 2: 创建 FIFO + 启动 aplay + 写入数据
+            fifo_path = f"/tmp/tts_fifo_{os.getpid()}_{time.time()}"
+            os.mkfifo(fifo_path, 0o600)
+
+            def _fifo_writer():
+                """后台线程：写入 prebuffer + 持续流式数据到 FIFO。"""
+                try:
+                    fd = os.open(fifo_path, os.O_WRONLY)
+                    if prebuffer:
+                        os.write(fd, bytes(prebuffer))
+                    while True:
+                        chunk = resp.read(32768)
+                        if not chunk:
+                            break
+                        os.write(fd, chunk)
+                    os.close(fd)
+                    conn.close()
+                except BrokenPipeError:
+                    pass
+                except Exception as e:
+                    print(f"[Writer] 异常: {e}")
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+            writer_thread = threading.Thread(target=_fifo_writer, daemon=True)
+            writer_thread.start()
+
+            aplay = subprocess.Popen(
+                ["aplay", "-q", "-D", "plughw:1,0",
+                 "-r", str(TTS_SAMPLE_RATE),
+                 "-f", "S16_LE",
+                 "-t", "raw",
+                 "-c", "1",
+                 fifo_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-            print(f"[TTS] OK: \"{text[:50]}\" ({len(wav)} bytes, playing {wav_path})")
-            # 延迟清理临时文件（播放需要几秒）
-            threading.Thread(
-                target=lambda: (time.sleep(15), os.unlink(wav_path)),
-                daemon=True,
-            ).start()
+
+            writer_thread.join(timeout=120)
+            try:
+                aplay.wait(timeout=est_duration * 2 + 10)
+            except subprocess.TimeoutExpired:
+                print("[Play] aplay 超时，强制终止")
+                aplay.kill()
+                aplay.wait()
+
+            elapsed = time.time() - t0
+            total = len(prebuffer)
+            print(f"[TTS] 流式 OK: \"{text[:50]}\" ({total} bytes prebuffer, {elapsed:.1f}s total)")
+
         except Exception as e:
-            print(f"[TTS] FAIL: {e}")
+            print(f"[TTS] 流式异常: {e}")
+            import traceback
+            traceback.print_exc()
+            # 流式失败，无 fallback，直接放弃本次播报
+        finally:
+            if fifo_path:
+                try:
+                    os.unlink(fifo_path)
+                except OSError:
+                    pass
+
 
     @property
     def queue_size(self):
         with self._lock:
             return len(self._queue)
-
-
 # ============ 增量文件读取 ============
 def read_new_lines(filepath, offset):
     new_lines = []
@@ -251,7 +477,6 @@ def analyze_router_fast(lines, state):
         if not s:
             continue
 
-        # 模型切换检测
         m = MODEL_PROXY_RE.search(s)
         if m:
             model_name = m.group(1)
@@ -261,24 +486,21 @@ def analyze_router_fast(lines, state):
                 current_port = port
                 state["current_model"] = current_model
                 state["current_port"] = current_port
-                # 简化模型名
                 short = model_name.replace("Qwen3.6-", "").replace("-UD-Q8_K_XL", "")
                 text = BroadcastTexts.pick("MODEL_SWITCH", model=short)
                 if text:
                     broadcasts.append((text, 1, "model_switch"))
             continue
 
-        # 任务启动
         m = TASK_LAUNCH_RE.search(s)
         if m:
             task_id = int(m.group(1))
             state["_active_task"] = task_id
-            text = BroadcastTexts.pick("TASK_START", task_id=task_id)
+            text = BroadcastTexts.pick("TASK_START", task_id=num_to_chinese(task_id))
             if text:
                 broadcasts.append((text, 1, "task_start"))
             continue
 
-        # Prefill 完成
         m = TASK_PREFILL_RE.search(s)
         if m:
             task_id = int(m.group(1))
@@ -286,12 +508,11 @@ def analyze_router_fast(lines, state):
             tokens = int(m.group(3))
             speed = tokens / (ms / 1000) if ms > 0 else 0
             text = BroadcastTexts.pick("TASK_PREFILL",
-                                       task_id=task_id, tokens=tokens, speed=f"{speed:.0f}")
+                                       task_id=num_to_chinese(task_id), tokens=tokens, speed=f"{speed:.0f}")
             if text:
                 broadcasts.append((text, 1, "task_prefill"))
             continue
 
-        # 生成进度（只在里程碑播报：每 5000 token）
         m = TASK_GEN_RE.search(s)
         if m:
             task_id = int(m.group(1))
@@ -302,24 +523,22 @@ def analyze_router_fast(lines, state):
             if milestone > last_milestone and milestone > 0:
                 state["_last_gen_milestone"] = milestone
                 text = BroadcastTexts.pick("TASK_GEN_MILESTONE",
-                                           task_id=task_id, decoded=decoded, speed=f"{tg:.1f}")
+                                           task_id=num_to_chinese(task_id), decoded=decoded, speed=f"{tg:.1f}")
                 if text:
                     broadcasts.append((text, 0, "task_gen"))
             continue
 
-        # 任务结束
         m = TASK_RELEASE_RE.search(s)
         if m:
             task_id = int(m.group(1))
             n_tokens = int(m.group(2))
             state["_active_task"] = None
             state["_last_gen_milestone"] = 0
-            text = BroadcastTexts.pick("TASK_DONE", task_id=task_id, tokens=n_tokens)
+            text = BroadcastTexts.pick("TASK_DONE", task_id=num_to_chinese(task_id), tokens=n_tokens)
             if text:
                 broadcasts.append((text, 1, "task_done"))
             continue
 
-        # 空闲
         if TASK_IDLE_RE.search(s):
             if state.get("_active_task") is not None:
                 state["_active_task"] = None
@@ -387,8 +606,6 @@ def analyze_gpu_temp_lines(lines):
             line_alerts.sort(key=lambda a: -a["severity"])
             alerts.append(line_alerts[0])
     return alerts
-
-
 # ============ 状态管理 ============
 def load_state():
     if STATE_FILE.exists():
@@ -478,12 +695,15 @@ def decide_slow_broadcast(alerts, state):
         if text:
             return text, atype
 
-    # P4: 日常播报
+    # P4: 日常播报 (含系统状态)
     if (now - state.get("last_broadcast_time", 0)) >= DAILY_INTERVAL:
         active = bool(state.get("active_tasks"))
-        text = BroadcastTexts.pick("BUSY" if active else "QUIET")
-        if text:
-            return text, "daily"
+        status_text = BroadcastTexts.pick("BUSY" if active else "QUIET")
+        daily_report = build_daily_report()
+        if status_text:
+            if daily_report:
+                return f"{status_text} {daily_report}", "daily"
+            return status_text, "daily"
 
     return None, ""
 
@@ -493,16 +713,17 @@ def main():
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT, _handle_sigterm)
 
-    print(f"[Monitor] 启动监控播报系统 v2")
-    print(f"[Monitor] 快速轮询: {FAST_POLL}s (模型+任务) | 慢速轮询: {SLOW_POLL}s (硬件+告警)")
-    print(f"[Monitor] TTS: {TTS_URL} speaker={TTS_SPEAKER} volume={TTS_VOLUME}")
+    print(f"[Monitor] 启动监控播报系统 v6 (流式预缓冲 80% TTS + 系统状态播报)")
+    print(f"[Monitor] 高频轮询: {FAST_POLL}s (模型+任务) | 低频轮询: {SLOW_POLL}s (硬件+告警)")
+    print(f"[Monitor] TTS: {TTS_URL}")
+    print(f"[Monitor] speaker={TTS_SPEAKER} volume={TTS_VOLUME} language=chinese")
+    print(f"[Monitor] 队列最大: {TTS_QUEUE_MAX} 条，超出直接丢弃")
     print(f"[Monitor] 日志: {ROUTER_LOG}")
     print(f"[Monitor] 硬件: {GPU_TEMP_LOG}")
 
     state = load_state()
     offsets = state.get("file_offsets", {})
 
-    # 首次启动：从文件末尾开始
     for fpath in [ROUTER_LOG, GPU_TEMP_LOG]:
         fp = str(fpath)
         if fp not in offsets:
@@ -514,19 +735,17 @@ def main():
                 print(f"[Monitor] {fpath.name}: 不存在")
     state["file_offsets"] = offsets
 
-    # 初始化运行时状态
     state["_active_task"] = None
     state["_last_gen_milestone"] = 0
 
-    # 启动 TTS 队列
     tts = TTSQueue()
     tts.start()
 
-    fast_counter = 0  # 用于触发慢速轮询
+    fast_counter = 0
 
     while _running:
         try:
-            # ---- 快速轮询：router.log（模型+任务）----
+            # 快速轮询：router.log（模型+任务）
             fp = str(ROUTER_LOG)
             offset = state["file_offsets"].get(fp, 0)
             new_lines, new_offset = read_new_lines(ROUTER_LOG, offset)
@@ -540,16 +759,12 @@ def main():
                 if fast_broadcasts:
                     print(f"[Fast] {ROUTER_LOG.name}: {len(fast_broadcasts)} 播报")
 
-            # ---- 慢速轮询（每 SLOW_POLL/FAST_POLL 次快速轮询触发一次）----
+            # 慢速轮询
             if fast_counter >= SLOW_POLL // FAST_POLL:
                 fast_counter = 0
 
                 all_alerts = []
 
-                # router.log 告警分析（复用同一文件的增量）
-                # 注意：快速轮询已经更新了 offset，这里不需要再读
-                # 我们用上一轮快速轮询的行做告警分析
-                # 方案：慢速轮询单独维护一个 offset
                 slow_fp = str(ROUTER_LOG) + ":slow"
                 slow_offset = state["file_offsets"].get(slow_fp, state["file_offsets"].get(fp, 0))
                 slow_lines, slow_new_offset = read_new_lines(ROUTER_LOG, slow_offset)
@@ -560,7 +775,6 @@ def main():
                     if alerts:
                         print(f"[Slow] {ROUTER_LOG.name}: {len(alerts)} 告警")
 
-                # gpu-temp.log
                 fp_gpu = str(GPU_TEMP_LOG)
                 offset_gpu = state["file_offsets"].get(fp_gpu, 0)
                 gpu_lines, gpu_new_offset = read_new_lines(GPU_TEMP_LOG, offset_gpu)
@@ -571,7 +785,6 @@ def main():
                     if hw_alerts:
                         print(f"[Slow] {GPU_TEMP_LOG.name}: {len(hw_alerts)} 告警")
 
-                # 播报决策
                 text, btype = decide_slow_broadcast(all_alerts, state)
                 if text:
                     pri = 3 if any(a["severity"] == 3 for a in all_alerts if a["type"] == btype) else 1
@@ -593,7 +806,6 @@ def main():
                     break
                 time.sleep(1)
 
-    # 优雅退出
     save_state(state)
     print("[Monitor] 已退出")
 

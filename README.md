@@ -50,61 +50,6 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 >
 > **Historical reference (F16 KV UB=512, superseded):** p128=56.7, p4K=56.7, p32K=50.1, p64K=46.7, p128K=38.0, p256K=28.4 t/s gen; 371–931 t/s prefill. Gen speed nearly identical across UB=256/512 (±2 t/s); UB choice mainly affects prefill/TTFT.
 
-### 35B-A3B MoE APEX I-Quality (alias `35xq`, ~22 GB) — **DELETED**
-
-⚠ Model file removed. Benchmark data preserved for reference.
-
-APEX quantization — Adaptive Precision for EXpert Models. Mixed-precision per tensor (critical layers Q6_K/Q8_0, middle expert layers Q4_K_M). ~22 GB overall (between Q4 and Q5 by size, but quality matches Q8). imatrix-calibrated with diverse data. **~48% faster than UD-Q8 + MTP, 59% file size.** Was auxiliary model with mmproj for vision tasks.
-
-**Historical config: F16 KV cache.** Same pattern as 35B UD-Q8: ≤128K → UB=512 (prefill +15~23%); 256K → UB=256 (prefill -4% vs UB=512).
-
-#### F16 KV UB=512 (historical benchmark)
-
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | 84.1 | 401.7 | 0.40s |
-| p4K | 80.3 | 934.9 | 8.2s |
-| p32K | 62.3 | 731.1 | 49.9s |
-| p64K | 57.2 | 590.0 | 117.5s |
-| p128K | 47.0 | 425.1 | 319.1s |
-| p256K | 32.9 | 241.0 | 1038.2s |
-
-> APEX I-Quality gen speed **~48% faster** than UD-Q8 at all prompt sizes (80 vs 54 t/s). File size 21.9 GB vs 37 GB.
-
-### 35B-A3B MoE APEX I-Balanced (alias `35xb`, ~24 GB) — **DELETED**
-
-⚠ Model file removed (2026-06-12). Benchmark data preserved for reference.
-
-APEX quantization — best quality-to-speed tradeoff. Mixed-precision per tensor (critical layers Q6_K/Q5_K_M, middle expert layers Q4_K_M). ~24 GB overall (between Q5 and Q6 by size). KL max 4.53 — **lowest deviation among all quantizations** (even better than Q8's 9.72). imatrix calibration reduces worst-case deviation by 68%. **Not registered in Hermes** — served by llama-server for manual API switch only.
-
-**Optimal config: F16 KV cache, UB=512.** UB=512 is the best overall choice for ≤128K (prefill +22~25% vs UB=256). UB≥1024 degrades at ≥128K (p256K prefill -34% vs UB=512).
-
-#### F16 KV UB=512 (historical benchmark)
-
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | 75.2 | 377.5 | 0.42s |
-| p4K | 75.7 | 903.0 | 8.51s |
-| p32K | 62.9 | 706.2 | 51.71s |
-| p64K | 56.1 | 575.9 | 120.35s |
-| p128K | 45.3 | 417.3 | 325.07s |
-| p256K | 35.8 | 240.9 | 1038.41s |
-
-#### F16 KV UB=256 (optimal 256K)
-
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | 78.2 | 435.3 | 0.37s |
-| p4K | 78.9 | 731.9 | 10.50s |
-| p32K | 65.1 | 577.9 | 63.19s |
-| p64K | 56.7 | 475.7 | 145.70s |
-| p128K | 44.5 | 356.7 | 380.26s |
-| p256K | 32.0 | 246.9 | 1013.52s |
-
-> APEX I-Balanced gen speed **~40% faster** than UD-Q8. Quality leader: KL max 4.53 is the best among all quantizations.
->
-> **Config updates since these benchmarks** (2026-06-06): `spec-draft-n-max` 3→2 (+5~12% gen speed), `ubatch-size` 512→256 (stability at long contexts), `cache-reuse=256` (improves multi-turn), `max_cstate=1` + `governor=performance` (system-level latency reduction). These changes improve gen speed and TTFT but the UB=512 table above was measured before these updates — actual performance with current config is expected to be different.
-
 ### 27B Dense Q8 (Q8_K_XL, alias `278`)
 
 Dense model — all 27B params active per token. Current Hermes default model.
@@ -154,98 +99,48 @@ Dense model — all 27B params active per token. Current Hermes default model.
 >
 > **Historical reference (Q8_0 KV UB=512, superseded):** p128=127.4, p4K=247.3, p32K=194.6, p64K=160.2, p128K=119.1, p256K=82.8 t/s prefill; gen 7.3–13.8 t/s.
 
-### 27B Dense Q6 (Q6_K_XL, alias `276`) — **DELETED**
-
-⚠ Model file removed. Benchmark data preserved for reference.
-
-Dense model, Q6 quantization — was best balance of speed and accuracy.
-
-**Historical config: Q8_0 KV + UB=512.**
-
-#### Q8_0 KV UB=512 (historical benchmark)
-
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | 18.9 | 140.8 | 1.1s |
-| p4K | 17.2 | 244.0 | 31.5s |
-| p32K | 15.8 | 194.6 | 187.7s |
-| p64K | 14.2 | 160.3 | 432.3s |
-| p128K | 11.2 | 119.1 | 1139.1s |
-| p256K | 8.8 | 82.7 | 3025.1s |
-
-> p256K elapsed: 3130s (~52 min).
-
-### 27B Dense Q4 (Q4_K_XL, alias `274`) — **DELETED**
-
-⚠ Model file removed. Benchmark data preserved for reference.
-
-Dense model, Q4 quantization — was fastest generation among Dense models.
-
-**Historical config: Q8_0 KV + UB=1024.**
-
-#### Q8_0 KV UB=1024 (historical benchmark)
-
-| Prompt | Gen (t/s) | Prefill (t/s) | TTFT |
-|--------|----------|--------------|------|
-| p128 | 26.5 | 161.9 | 1.0s |
-| p4K | 25.1 | 314.9 | 24.4s |
-| p32K | 20.1 | 244.9 | 149.1s |
-| p64K | 18.4 | 189.4 | 366.0s |
-| p128K | 14.5 | 133.2 | 1018.6s |
-| p256K | 10.4 | 88.9 | 2814.1s |
-
-> p256K elapsed: 2886s (~48 min).
-
 ### Cross-Model Comparison (Optimal Configs)
 
-| Prompt | APEX I-Q | APEX I-B | 35B UD-Q8 | 27B Q8 | 27B Q6 | 27B Q4 |
-|--------|---------|---------|--------|--------|--------|--------|
-| p128 Gen | 84.1 | 78.2 | 56.7 | 13.8 | 18.9 | 26.5 |
-| p4K Gen | 80.3 | 78.9 | 56.7 | 13.4 | 17.2 | 25.1 |
-| p32K Gen | 62.3 | 65.1 | 50.1 | 12.5 | 15.8 | 20.1 |
-| p64K Gen | 57.2 | 56.7 | 46.7 | 12.1 | 14.2 | 18.4 |
-| p128K Gen | 47.0 | 45.3 | 38.0 | 10.0 | 11.2 | 14.5 |
-| p256K Gen | 32.9† | 32.0† | 29.3† | 7.3 | 8.8 | 10.4 |
-| p256K TTFT | 996s† | 1014s† | 999s† | 3022s | 3025s | 2814s |
+| Prompt | 35B UD-Q8 | 27B Q8 |
+|--------|-----------|--------|
+| p128 Gen | 56.7 | 13.8 |
+| p4K Gen | 56.7 | 13.4 |
+| p32K Gen | 50.1 | 12.5 |
+| p64K Gen | 46.7 | 12.1 |
+| p128K Gen | 38.0 | 10.0 |
+| p256K Gen | 29.3† | 7.3 |
+| p256K TTFT | 999s† | 3022s |
 
-> Configs: APEX I-Q/I-B = F16 KV (≤128K: UB=512, †256K: UB=256), 35B Q8 = F16 KV (≤128K: UB=512, †256K: UB=256), 27B Q8/Q6 = Q8_0 KV UB=512, 27B Q4 = Q8_0 KV UB=1024. Gen speeds include thinking tokens.
+> Configs: 35B Q8 = F16 KV (≤128K: UB=512, †256K: UB=256), 27B Q8 = Q8_0 KV UB=512. Gen speeds include thinking tokens.
 
 ### Intelligence Test (35B MoE, MTP enabled)
 
-8 questions covering math, logic, CS, and philosophy. Scored by keyword matching (max 10 per question, total 80). All models use F16 KV + UB=512 + MTP (`--spec-type draft-mtp --spec-draft-n-max 2`).
+8 questions covering math, logic, CS, and philosophy. Scored by keyword matching (max 10 per question, total 80). Model uses F16 KV + UB=512 + MTP (`--spec-type draft-mtp --spec-draft-n-max 2`).
 
-| Question | 35xq (I-Q) | 35xb (I-B) | 358 (Q8) |
-|----------|-----------|-----------|----------|
-| Gaussian sum (1+2+...+100) | 10/10 | 10/10 | 10/10 |
-| Syllogism validity | 0/10 | 4/10 | 4/10 |
-| Binary search complexity | 3/10 | 3/10 | 3/10 |
-| River crossing puzzle | 10/10 | 10/10 | 10/10 |
-| Quantum entanglement | 5/10 | **8/10** | 3/10 |
-| Definite integral ∫₀¹x²dx | 3/10 | 3/10 | 3/10 |
-| Liar paradox | 7/10 | 7/10 | **10/10** |
-| LRU cache design | 10/10 | 10/10 | 10/10 |
-| **Total** | **48/80** | **55/80** 🏆 | **53/80** |
-| Avg Gen speed | 82.3 t/s | 81.7 t/s | 57.3 t/s |
-
-> APEX I-Balanced scores highest (55/80) — imatrix calibration may better preserve reasoning patterns in MoE models. I-Quality is fastest but shows more reasoning errors (especially syllogism: 0/10). All three struggle with syllogism (keyword-based scoring may be strict). UD-Q8 scores 10/10 on liar paradox where APEX models get 7/10.
+| Question | 358 (Q8) |
+|----------|----------|
+| Gaussian sum (1+2+...+100) | 10/10 |
+| Syllogism validity | 4/10 |
+| Binary search complexity | 3/10 |
+| River crossing puzzle | 10/10 |
+| Quantum entanglement | 3/10 |
+| Definite integral ∫₀¹x²dx | 3/10 |
+| Liar paradox | **10/10** |
+| LRU cache design | 10/10 |
+| **Total** | **53/80** |
+| Avg Gen speed | 57.3 t/s |
 
 ### Vision Test (35B MoE + mmproj, MTP enabled)
 
-All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as base64 via OpenAI chat completions API. All models use F16 KV + UB=512 + MTP.
+Model uses `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as base64 via OpenAI chat completions API. F16 KV + UB=512 + MTP.
 
-| Image | Prompt tokens | Model | Gen (t/s) | MTP accept rate | Elapsed |
-|-------|-------------|-------|-----------|----------------|---------|
-| Baby sleeping (83 KB) | 939 | 35xq | **73.5** | 55.8% | 16.7s |
-| | | 35xb | 69.6 | 52.4% | 14.6s |
-| | | 358 | 51.2 | 50.9% | 18.3s |
-| Outdoor photo (1.4 MB) | 2059 | 35xq | **69.8** | 52.3% | 22.3s |
-| | | 35xb | 65.4 | 48.4% | 23.4s |
-| | | 358 | 49.3 | 48.2% | 28.4s |
-| Birthday photo (2.8 MB) | 4034 | 35xq | 70.5 | 53.9% | 35.2s |
-| | | 35xb | **71.1** | 56.6% | 35.2s |
-| | | 358 | 53.5 | 55.2% | 39.9s |
+| Image | Prompt tokens | Gen (t/s) | MTP accept rate | Elapsed |
+|-------|-------------|-----------|----------------|---------|
+| Baby sleeping (83 KB) | 939 | 51.2 | 50.9% | 18.3s |
+| Outdoor photo (1.4 MB) | 2059 | 49.3 | 48.2% | 28.4s |
+| Birthday photo (2.8 MB) | 4034 | 53.5 | 55.2% | 39.9s |
 
-> Vision mode MTP accept rate (48–57%) is significantly lower than text mode (60–70%), as visual tokens are harder to predict. APEX I-Quality is ~39% faster than UD-Q8 on vision tasks. All three models accurately describe image contents.
+> Vision mode MTP accept rate (48–57%) is significantly lower than text mode (60–70%), as visual tokens are harder to predict. The model accurately describes image contents.
 
 ---
 
@@ -287,7 +182,6 @@ All three 35B MoE models share `mmproj-F16.gguf` (899 MB, qwen35moe architecture
 | 27B Dense: UB constraints | F16 KV UB=256 (current, 278) | UB=512 previously caused instability; unified to UB=256; UB≥2048 Vulkan crash |
 | Thinking mode | All models: enabled (`reasoning-budget=16384`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
-| Concurrency | 35B: up to 3, 27B Q8: up to 1, 27B Q6/Q4: up to 2 | Multi-slot supported; 278 parallel=1 to leave memory headroom when dual-model loaded |
 | `cache-ram` | 278=`49152`, 358=`65536` (per-model in INI) | Prompt cache sized per model role: 278 (primary, 48 GB) in single-model mode; 358 (auxiliary, 64 GB) for future dual-model. Previously `16384/4096` in dual-model mode; `--cache-ram -1` caused unbounded growth (see Known Issues) |
 | `kv-unified` | 1 (all models, set in INI) | Unified KV cache; required for Vulkan slot-save/restore; bypasses GGML_ASSERT crash on unified memory |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
@@ -382,6 +276,7 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880 processor.max_cs
 | Build options | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` |
 
 > ⚠️ **Version upgraded from b9315 → b9592 (2026-06-11) → b9617 (2026-06-13) → b9625 (2026-06-14) → b9692 (2026-06-18).** Notable changes: Vulkan contiguous buffer fast path (#23973), Vulkan memcpy pipeline barriers (#23770), server checkpoint pos_next fix (#24411), reasoning-budget WebUI precedence fix (#24517), router mode log cleanup (#24463), Vulkan non-contig unary/glu ops fix (#24215), Jinja template bug fixes (#24574, #24580), server UI static asset refactor (#24550), Vulkan host-visible memory buffers on UMA. Commit `6c4cbdc70` ("server: MTP layer kv-cache should respect draft type ctk") is still present, but the current deployment uses default F16 KV cache (no explicit `cache-type-k`/`cache-type-v` in INI), so this bug **does not trigger**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) is re-enabled. Do not enable quantized KV on the Vulkan backend until upstream fixes this.
+
 | Vulkan runtime | 1.4.341 |
 | API protocol | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) |
 
@@ -415,45 +310,30 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 | Source | Short | Models | Description |
 |--------|-------|--------|-------------|
 | [unsloth/Qwen3.6-35B-A3B-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) | **UD-35B** | 358 | Unsloth Dynamic quant for 35B MoE |
-| [mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF](https://huggingface.co/mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF) | **APEX-35B** | 35xb, 35xq | APEX adaptive-precision quant for 35B MoE |
-| [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278, 276, 274 | Unsloth Dynamic quant for 27B Dense |
+| [unsloth/Qwen3.6-27B-GGUF](https://huggingface.co/unsloth/Qwen3.6-27B-GGUF) | **UD-27B** | 278 | Unsloth Dynamic quant for 27B Dense |
 
 | Alias | File | Source | Quant | Arch | Size | Active Params | Role |
 |-------|------|--------|-------|------|------|---------------|------|
-| **35xb** | `Qwen3.6-35B-A3B-APEX-MTP-I-Balanced.gguf` | APEX-35B | APEX mixed | **MoE** | ~24 GB | 3B | Deleted (file removed 2026-06-12) |
 | **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Auxiliary (Hermes auxiliary tasks, vision) |
-| **35xq** | `Qwen3.6-35B-A3B-APEX-MTP-I-Quality.gguf` | APEX-35B | APEX mixed | **MoE** | ~22 GB | 3B | Deleted (file removed) |
 | **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Primary (Hermes default + fallback) |
-| **276** | `Qwen3.6-27B-UD-Q6_K_XL.gguf` | UD-27B | UD-Q6_K_XL | Dense | ~25 GB | 27B | Deleted (file removed) |
-| **274** | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | UD-27B | UD-Q4_K_XL | Dense | ~17 GB | 27B | Deleted (file removed) |
 
-> **Alias naming convention:** `35b` is reserved for the Qwen3.6-35B-A3B architecture family. APEX variants use `35xq` (I-Quality) and `35xb` (I-Balanced). UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `276` = 27B Q6). Both alias and full filename work in API requests.
+> **Alias naming convention:** UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `278` = 27B Q8). Both alias and full filename work in API requests.
 >
-> **Deployment modes:**
-> - **Single-model mode**: `models-max 1` → 278 loaded by default; 358 available for manual switch (8-17s cold load). Per-model `cache-ram` limits (278=49152, 358=65536) sized for single-model GTT budget. GTT 120GB + mlock=1. No `--sleep-idle-seconds`.
->
-> **Deleted models:** 35xb (24 GB, removed 2026-06-12), 35xq (21.9 GB), 276 (25 GB), 274 (17 GB) removed to reclaim disk space. Benchmark data and test scripts preserved in git for reference.
+> **Deployment mode:** Single-model mode (`models-max 1`): 278 loaded by default; 358 available for manual switch (8-17s cold load). Per-model `cache-ram` limits (278=49152, 358=65536) sized for single-model GTT budget. GTT 120GB + mlock=1. No `--sleep-idle-seconds`.
 
 ### 1. Cloud Nginx Configuration
 
 **File:** `/etc/nginx/sites-enabled/default` (LLM-relevant sections)
 
-#### nginx.conf key settings
-
 ```nginx
-server_tokens off;          # Hide Nginx version
-gzip off;                   # Global gzip off; per-location control
-
-# Rate limiting (in http block)
+# nginx.conf key settings
+server_tokens off;
+gzip off;
 limit_req_zone $binary_remote_addr zone=api:10m rate=60r/m;
-```
 
-#### LLM-related locations
-
-```nginx
 server {
     listen 443 ssl default_server;
-    client_max_body_size 64m;   # Support large prompt requests
+    client_max_body_size 64m;
     server_tokens off;
 
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -467,7 +347,7 @@ server {
         return 200 '{}';
     }
 
-    # LLM Inference API (OpenAI-compatible) — SSH tunnel port 8080 → llama-server
+    # LLM Inference API — SSH tunnel port 8080 → llama-server
     location /v1/ {
         proxy_pass http://127.0.0.1:8080;
         limit_req zone=api burst=20 nodelay;
@@ -478,7 +358,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Long timeout (Nginx ≥ llama-server --timeout 3600)
+        # Nginx timeout 3600s; Hermes-side timeout 7200s
         proxy_read_timeout 3600s;
         proxy_connect_timeout 60s;
         proxy_send_timeout 3600s;
@@ -487,7 +367,7 @@ server {
         proxy_set_header Connection '';
         proxy_buffering off;
         proxy_cache off;
-        gzip off;              # SSE requires gzip off
+        gzip off;
     }
 
     # Health check
@@ -500,26 +380,13 @@ server {
 }
 ```
 
-**Configuration notes:**
-- **`/v1/`** — OpenAI-compatible API proxy to `127.0.0.1:8080` (SSH reverse tunnel → inference server)
-- `/v1/props` returns `{}` to avoid 404 noise from Hermes capability probes
-- `limit_req_zone 60r/m burst=20` — all locations share the same rate limiter
-- `server_tokens off` — double-enforced (nginx.conf + server block)
-- `client_max_body_size 64m` — supports 100K+ token long prompts
-- Global `gzip off`; `/v1/` explicitly `gzip off` (SSE requirement)
-- All timeouts aligned: Nginx 3600s ↔ llama-server 3600s ↔ Hermes 3600s
+**Key points:**
+- `/v1/` proxies to `127.0.0.1:8080` (SSH tunnel → inference server)
+- `client_max_body_size 64m` for long prompts
+- SSE requires `proxy_buffering off` + `gzip off`
+- Nginx timeout 3600s; Hermes-side timeout 7200s (Hermes handles its own reconnection)
 
 **Apply:** `sudo nginx -t && sudo systemctl reload nginx`
-
-**Link latency reference** (WSL → Cloud Nginx → SSH tunnel → Inference box):
-
-| Endpoint | TTFB | Notes |
-|----------|------|-------|
-| `/v1/props` | ~165ms | Nginx returns `{}` directly |
-| `/v1/models` | ~390-480ms | Proxied to llama-server |
-| `/v1/chat/completions` (short) | ~1.3s | Includes inference time |
-
-> Pure link overhead (DNS + TLS + SSH tunnel): ~400-500ms. This is inherent to the SSH reverse tunnel architecture.
 
 ### 2. Cloud SSH Server
 
@@ -529,15 +396,12 @@ server {
 AllowTcpForwarding yes
 ClientAliveInterval 60
 ClientAliveCountMax 3
-# GatewayPorts no   (default — keep tunnel on 127.0.0.1 only)
-
-# Security: key-only auth (disable password login)
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 ```
 
-> ⚠️ **Important:** Ubuntu's `/etc/ssh/sshd_config.d/` directory contains drop-in files (e.g., `50-cloud-init.conf`) that **override** the main config. You must also check and edit files in that directory, or `PasswordAuthentication no` may not take effect. Verify with: `sudo sshd -T | grep passwordauthentication`
+> ⚠️ Check `/etc/ssh/sshd_config.d/` for drop-in files that may override the main config.
 
 **Apply:** `sudo systemctl restart ssh`
 
@@ -545,7 +409,7 @@ PubkeyAuthentication yes
 
 ### 3. SSH Reverse Tunnel (systemd)
 
-**File:** `~/.config/systemd/user/llm-tunnel.service` (user-level, no sudo needed)
+**File:** `~/.config/systemd/user/llm-tunnel.service`
 
 ```ini
 [Unit]
@@ -572,48 +436,26 @@ RestartSec=10
 WantedBy=default.target
 ```
 
-**Tunnel port:** `-R 8080:127.0.0.1:12345` (API only)
-
 ```bash
 mkdir -p ~/.config/systemd/user
-# Create the service file, then:
 systemctl --user daemon-reload
 systemctl --user enable llm-tunnel
 systemctl --user start llm-tunnel
-loginctl enable-linger   # survive logout
-```
-
-**Manual tunnel test (before systemd):**
-```bash
-# On inference box:
-ssh -R 8080:127.0.0.1:12345 {your_server_user}@{your_server_ip} -N
-# On cloud, verify:
-curl http://127.0.0.1:8080/v1/models
-```
-
-**SSH key setup (passwordless):**
-```bash
-ssh-keygen -t ed25519 -C "llm-tunnel@{your_hostname}"
-ssh-copy-id {your_server_user}@{your_server_ip}
+loginctl enable-linger
 ```
 
 ### 4. Swap Configuration (Ubuntu)
 
 ```bash
-# Check current swap
-swapon --show
-
 # Create 32 GB swap file
 sudo fallocate -l 32G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
-
-# Persist across reboots
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
-> 32 GB swap provides safety margin for dual-model cold-load memory spikes. With `--sleep-idle-seconds` removed and models resident, actual swap usage should be minimal (~17 MB observed).
+> 32 GB swap provides safety margin for model cold-load memory spikes. With models resident, actual swap usage is minimal (~17 MB observed).
 
 ### 5. GPU Temperature Monitoring
 
@@ -687,21 +529,17 @@ ExecStart=/bin/bash -c '/home/$USER/scripts/gpu-temp-log.sh >> /home/$USER/logs/
 
 ```bash
 mkdir -p ~/scripts ~/logs
-# Save script to ~/scripts/gpu-temp-log.sh
 chmod +x ~/scripts/gpu-temp-log.sh
-# Save service + timer units to ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now gpu-temp-log.timer
 ```
-
-**Log format:** `timestamp | GPU temp (junction, memory) | GPU busy % | Power W | RAM used/total GB`
 
 **Sample output:**
 ```
 2026-06-03 13:25:28 | GPU 82°C (junc N/A, mem N/A) | 100% busy | 108W | RAM 106.0/124.9GB
 ```
 
-> **Note:** Junction and memory temperatures are not available on this APU (temp2_input/temp3_input not exposed by the amdgpu driver). The GPU edge temperature (`temp1_input`) is the primary monitoring metric. Observed range under full inference load: 78–82°C (TjMax 100°C).
+> **Note:** Junction and memory temperatures are not available on this APU. GPU edge temperature (`temp1_input`) is the primary monitoring metric. Observed range under full inference load: 78–82°C (TjMax 100°C).
 
 ### 6. Preset INI (Per-Model Parameters)
 
@@ -822,22 +660,22 @@ curl https://{your_domain}/v1/chat/completions \
 
 #### Hermes Agent
 
-[Hermes](https://github.com/nicobailon/hermes-agent) v0.16.0 — terminal AI agent with TUI, oneshot mode, multi-platform Gateway, MCP, Skills, and cron scheduling.
+[Hermes](https://github.com/nicobailon/hermes-agent) v0.15.2 — terminal AI agent with TUI, oneshot mode, multi-platform Gateway, MCP, Skills, and cron scheduling.
 
 **Install path:** `~/.hermes/` on WSL Ubuntu 26.04
 
-**Config file:** `~/.hermes/config.yaml` — two independent deployments, one model each:
+**Config file:** `~/.hermes/config.yaml` — single-machine deployment, 278 as default model with 358 as auxiliary.
 
-| | Machine A (278-only) | Machine B (358-only) |
-|---|---|---|
-| **model.default** | `278` (27B Dense) | `358` (35B MoE) |
-| **providers.models** | `278` only | `358` only |
-| **supports_vision** | `false` | `true` (mmproj) |
-| **auxiliary tasks** | all → `278`, no vision | all → `358`, vision enabled |
-| **fallback_model** | `{provider: local-llm, model: '278'}` | `{provider: local-llm, model: '358'}` |
+| Config Key | Value |
+|---|---|
+| **model.default** | `278` (27B Dense) |
+| **providers.models** | `278`, `358` |
+| **supports_vision** | `true` (358 mmproj) |
+| **auxiliary tasks** | all → `358`, vision enabled |
+| **fallback_model** | `{provider: local-llm, model: '278'}` |
 
-**Shared config:**
-- Provider: `local-llm` → `https://{your_domain}/v1` (v0.16.0 key format, no `custom:` prefix)
+**Key config:**
+- Provider: `local-llm` → `https://{your_domain}/v1`
 - `key_env: DASHENZHIYAN_API_KEY` (set in `~/.hermes/.env`)
 - `context_length: 262144`, `max_output_tokens: 32768`, `max_tokens: 32768`
 - `request_timeout_seconds: 7200`, `stale_timeout_seconds: 7200` (aligned with full-chain timeout)
@@ -845,7 +683,7 @@ curl https://{your_domain}/v1/chat/completions \
 - `chat_template_kwargs.enable_thinking: true` (main), `false` (auxiliary)
 - `compression: threshold=0.80, target_ratio=0.30, protect_last_n=20`
 - `streaming.enabled: true` (gateway bot streaming)
-- `approvals.mode: auto` (routine ops pass; destructive actions require confirmation)
+- `approvals.mode: auto`
 
 **Environment variable overrides** (`~/.hermes/.env`):
 ```bash
@@ -854,7 +692,7 @@ HERMES_STREAM_STALE_TIMEOUT=7200  # override hardcoded 180s default
 ```
 
 **⚠️ Pitfalls:**
-- `providers` key must be `local-llm` (v0.16.0), not `custom:local-llm` (v0.15.1). Mismatch → timeout falls back to 120s
+- `providers` key must be `local-llm` (v0.15.2), not `custom:local-llm` (v0.15.1). Mismatch → timeout falls back to 120s
 - `auxiliary.vision.base_url` must be explicit (empty string → RuntimeError on vision tasks)
 - `fallback_model` must be dict `{provider: ..., model: ...}`, not bare string
 - `yaml.dump` may drop bare string values (e.g. `fallback_model: '278'` → empty); verify after rewrite
@@ -868,21 +706,230 @@ hermes -z 'quick question'             # oneshot mode
 
 **TUI commands:** `/skills` list skills, `/help` all commands, `Ctrl+C` interrupt, `Ctrl+D` or `/exit` quit.
 
-Full config backups: `docs/hermes/config-278.yaml` and `docs/hermes/config-358.yaml`
+#### opencode (WSL)
+
+[opencode](https://opencode.ai) — terminal-based AI coding agent, configured to use the local inference server.
+
+**Config file:** `~/.config/opencode/opencode.jsonc`
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "local-llm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "本地推理机",
+      "options": {
+        "baseURL": "https://dashenzhiyan.com/v1",
+        "apiKey": "{your_api_key}",
+        "timeout": 7200000,
+        "chunkTimeout": 7200000
+      },
+      "models": {
+        "Qwen3.6-27B-UD-Q8_K_XL": {
+          "name": "Qwen3.6-27B Dense (278)",
+          "reasoning": true,
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "Qwen3.6-35B-A3B-UD-Q8_K_XL": {
+          "name": "Qwen3.6-35B-A3B (358)",
+          "reasoning": true,
+          "attachment": true,
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        }
+      }
+    }
+  },
+  "model": "local-llm/Qwen3.6-27B-UD-Q8_K_XL",
+  "small_model": "local-llm/Qwen3.6-35B-A3B-UD-Q8_K_XL"
+}
+```
+
+**Key points:**
+- Primary model (`model`): 278 (27B Dense) with reasoning enabled
+- Auxiliary model (`small_model`): 358 (35B MoE) with reasoning + attachment support
+- Both models: context=262144, output=32768
+- Timeout: 7200000ms (7200s), aligned with Hermes and llama-server
 
 #### QClaw
 
 QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, QQ, webchat).
 
-**Provider config** (`~/.qclaw/openclaw.json`):
-- `qclaw` provider → `http://127.0.0.1:19000/proxy/llm` (cloud proxy with model routing)
-- Single model `modelroute`: reasoning enabled, input supports text + image
-- Default model: `qclaw/pool-glm-5.1` (cloud proxy, does not directly hit inference server)
-- Channels: `wechat-access` (QQ), `openclaw-weixin` (WeChat local)
-- Plugins: `lossless-claw`, `browser`, `wechat-access`, `openclaw-weixin`, `qclaw-plugin`, `qclaw-embedding`, `memory-core`
-- Context engine: `lossless-claw` (LCM-based lossless context management)
+- **Provider:** `qclaw` → `http://127.0.0.1:19000/proxy/llm` (cloud proxy with model routing)
+- **Default model:** `qclaw/pool-glm-5.1` (cloud proxy, does not directly hit inference server)
+- **Channels:** `wechat-access` (QQ), `openclaw-weixin` (WeChat local)
 
-**Streaming:** WeChat/QQ/WeCom: blockStreaming; Telegram/Discord/Slack: edit-message streaming
+#### TTS Voice Synthesis Service
+
+Qwen3-TTS 1.7B model runs on pure CPU, providing voice output for the monitoring broadcast system and voice assistant.
+
+| Item | Details |
+|------|---------|
+| Model | Qwen3-TTS-12Hz-1.7B-Base |
+| Path | `/home/zxw/model/tts-1.7b-base/` |
+| Service | systemd user service `qwen-tts.service` (port 9900, enabled) |
+| Startup script | `/home/zxw/scripts/qwen-tts.sh` |
+| Performance | RTF ~1.8-2.5 (pure CPU 8 threads), short text ~2.9s |
+| Memory | ~3.2 GB |
+
+**API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/tts` | POST | Non-streaming synthesis, returns complete WAV |
+| `/v1/tts/stream` | POST | Streaming synthesis, returns chunks as generated |
+| `/v1/audio/speech` | POST | OpenAI-compatible interface |
+
+**Request example:**
+
+```bash
+curl -s -X POST http://127.0.0.1:9900/v1/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Monitoring started","speaker":3061,"volume":0.3}' \
+  -o /tmp/tts_out.wav
+```
+
+**Audio playback:**
+
+The inference box has a built-in speaker (card1 ALC245 Analog), played via ALSA:
+
+```bash
+# Play (non-blocking, detached from SSH session)
+systemd-run --user --no-block aplay -q -D plughw:1,0 /tmp/tts_out.wav
+```
+
+**ALSA config:** `/etc/asound.conf` sets `defaults.pcm.card=1`, `defaults.ctl.card=1`.
+
+> ⚠️ Do not use `< /dev/null` redirection when playing audio over SSH (hangs the session). Use `systemd-run --user --no-block` to fully detach.
+
+#### Qwen3-ASR Speech Recognition Service
+
+Qwen3-ASR 1.7B model runs on pure CPU for speech-to-text, providing voice input for the voice assistant pipeline.
+
+| Item | Details |
+|------|---------|
+| Model | `Qwen3-ASR-1.7B-Q8_0.gguf` (2.1 GB) |
+| mmproj | `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` (340 MB) |
+| Service | systemd user service `llama-asr.service` (port 48091, enabled, active) |
+| Startup script | `/home/zxw/scripts/llama-asr.sh` |
+| Inference | Pure CPU (`n-gpu-layers=0`), does not occupy GPU |
+| Context | `ctx-size=65536` (full model training context) |
+| Threads | 8 |
+| Timeout | 600s |
+| Performance | prompt eval 199.95 t/s, eval 36.29 t/s |
+| API | OpenAI-compatible (llama-server) |
+
+**Service file:** `~/.config/systemd/user/llama-asr.service`
+
+```ini
+[Unit]
+Description=Qwen3-ASR-1.7B STT Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/zxw/scripts/llama-asr.sh
+LimitMEMLOCK=infinity
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=15
+KillMode=process
+
+[Install]
+WantedBy=default.target
+```
+
+**Startup script:** `/home/zxw/scripts/llama-asr.sh`
+
+```bash
+#!/bin/bash
+# ASR 纯 CPU 推理（不占用 GPU，避免影响大模型）
+# ctx-size 65536 = 模型完整训练上下文
+
+LOGDIR="/home/zxw/logs/llama"
+BINDIR="/home/zxw/llama.cpp/build/bin"
+SERVER="$BINDIR/llama-server"
+MODEL="/home/zxw/model/Qwen3-ASR-1.7B-Q8_0.gguf"
+MMPROJ="/home/zxw/mmproj/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+PORT=48091
+
+export LD_LIBRARY_PATH="$BINDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+mkdir -p "$LOGDIR"
+
+exec "$SERVER" \
+  --host 127.0.0.1 \
+  --port "$PORT" \
+  --model "$MODEL" \
+  --mmproj "$MMPROJ" \
+  --ctx-size 65536 \
+  --n-gpu-layers 0 \
+  --threads 8 \
+  --timeout 600 \
+  >> "$LOGDIR/asr.log" 2>&1
+```
+
+> ASR runs entirely on CPU to avoid competing with GPU-bound LLM inference. The 65536 context covers the model's full training context length.
+
+### ai-station-angle
+
+Application suite located in the repository at `ai-station-angle/`, providing monitoring broadcast and voice assistant capabilities for the inference station.
+
+**Files:**
+- `monitor-broadcast.py` — Monitoring broadcast system script
+- `voice_assistant_monitor_requirements.md` — Requirements document
+
+**Monitoring Broadcast System (v6, production):**
+
+Automated monitoring and TTS broadcast service that monitors LLM inference status and hardware health in real-time.
+
+| Item | Details |
+|------|---------|
+| Script | `ai-station-angle/monitor-broadcast.py` |
+| Service | systemd user service `monitor-broadcast.service` (enabled, Restart=on-failure) |
+| State file | `~/.config/monitor-broadcast/state.json` |
+
+**Dual-frequency polling architecture:**
+
+| Poll type | Interval | Monitors |
+|-----------|----------|----------|
+| Fast poll | 180s | Model switching, inference task lifecycle (start/prefill complete/generation milestones/end/idle) |
+| Slow poll | 300s | Hardware alerts (GPU temp/RAM/power), log E/F level entries, daily broadcast |
+
+**Daily broadcast interval:** 30 minutes.
+
+**Alert thresholds:**
+
+| Metric | WARN | CRIT |
+|--------|------|------|
+| GPU temperature | 80°C | 90°C |
+| Memory usage | 80% | 90% |
+| GPU power | 120W | 130W |
+
+**Log alert keywords:** OOM, Xid, segfault, Vulkan crash (`vk::DeviceLostError`), subprocess crash, Fatal, Error. 5-minute deduplication on severity-3 alerts.
+
+**TTS broadcast queue:**
+- Queue limit: 3 items (overflow drops new items)
+- CRIT alerts (severity ≥ 3) jump to queue head
+- Playback: streaming pre-buffer mode — estimates audio duration, pre-fills 80% buffer, then starts `aplay` via FIFO pipe while TTS continues streaming
+- No fallback to non-streaming TTS (removed in production); if streaming fails, the broadcast is skipped
+
+**Core constraint:** ASR and TTS run on pure CPU; LLM runs on GPU. This ensures voice processing never competes with LLM inference for GPU resources.
+
+**Voice assistant pipeline (planned):** ASR input → LLM dispatch → TTS voice output. Not yet implemented.
+
+**Monitoring broadcast pipeline (active):** Independent thread monitors hardware (GPU/CPU/RAM) + log alerts → TTS broadcast.
+
+**State persistence:** `~/.config/monitor-broadcast/state.json` stores file offsets, alert cooldowns, current model/port, and broadcast metadata. Transient state (`_active_task`, `_last_gen_milestone`) is runtime-only and not persisted.
+
+**Code audit:** See `ai-station-angle/CODE_AUDIT.md` for a detailed code audit report.
 
 ### Verification Checklist
 
@@ -941,7 +988,7 @@ curl https://{your_domain}/v1/chat/completions \
 
 **Status:** Open — waiting for upstream fix (PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453))
 
-**Affected models:** 27B Dense series (aliases `278`/`276`/`274`). 35B MoE models (aliases `358`/`35xb`/`35xq`) are **not** affected.
+**Affected models:** 27B Dense series (alias `278`). 35B MoE models (alias `358`) are **not** affected.
 
 **Symptom:** `llama-server` aborts with `GGML_ASSERT` failure when processing any request on 27B Dense models with `parallel ≥ 3` and MTP enabled.
 
@@ -993,8 +1040,6 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Fixed — removed `reasoning = off` and `reasoning-budget = 0` from model presets, replaced with `reasoning-budget = 8192`
 
-**Affected model:** 35B-A3B APEX I-Quality (alias `35xq`, **deleted**) only. All other models (358/35xb/278) are unaffected.
-
 **Root cause:** `reasoning = off` creates an attention mask mismatch between the checkpoint and runtime configuration. When restoring a prompt cache checkpoint, llama-server detects the mismatch and falls back to slow re-prefilling.
 
 **Warning:** Do **not** re-add `reasoning = off` to any model preset. Always keep reasoning enabled at the server level and control it per-request via `chat_template_kwargs: { enable_thinking: false }`.
@@ -1005,7 +1050,7 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 **Status:** Open — version locked at b9315; awaiting upstream fix
 
-**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). Current deployment uses default F16 KV (no explicit `cache-type-k`/`cache-type-v` in INI), so this issue is **not currently triggered**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) were re-enabled on any model. 35B MoE models (358/35xb) have always used F16 KV and are not affected.
+**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). Current deployment uses default F16 KV (no explicit `cache-type-k`/`cache-type-v` in INI), so this issue is **not currently triggered**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) were re-enabled on any model.
 
 **Symptom:** `vk::DeviceLostError` (`vk::Queue::submit: ErrorDeviceLost`) during MTP draft decode, causing llama-server slot process crash. Client sees HTTP 500 / "Failed to read connection".
 
@@ -1075,11 +1120,11 @@ spec-draft-n-max = 3
 
 ### Hermes Providers Key Mismatch Causes 120s Timeout Fallback
 
-**Status:** Fixed — v0.16.0 changed providers key to `local-llm` (no `custom:` prefix). v0.15.1 required `custom:local-llm`.
+**Status:** Fixed — v0.15.2 uses providers key `local-llm` (no `custom:` prefix).
 
-**Affected scenario:** Hermes v0.15.1 config where `model.provider = "custom:local-llm"` but `providers` dict key was `local-llm` (missing `custom:` prefix). **Not applicable in v0.16.0** — providers key is now `local-llm` without prefix.
+**Affected scenario:** Hermes config where `model.provider = "custom:local-llm"` but `providers` dict key was `local-llm` (missing `custom:` prefix).
 
-**Symptom:** Long-context requests (>120K tokens) consistently fail at ~120s, even though `request_timeout_seconds` is set to 3600. Short requests work fine, making the issue hard to diagnose.
+**Symptom:** Long-context requests (>120K tokens) consistently fail at ~120s, even though `request_timeout_seconds` is set to 7200. Short requests work fine, making the issue hard to diagnose.
 
 **Root cause chain:**
 1. Hermes calls `get_provider_request_timeout("custom:local-llm", "278")` to look up the timeout
@@ -1089,14 +1134,14 @@ spec-draft-n-max = 3
 5. Similarly, `get_provider_stale_timeout()` returns `None` → falls back to `HERMES_STREAM_STALE_TIMEOUT = 180s`
 6. 131K-token prefill takes ~1103s on 278 model → killed at 120s
 
-**Fix:** Change `providers` dict key from `local-llm` to `custom:local-llm` to match `model.provider`. Verify with:
+**Fix:** Ensure `providers` dict key matches `model.provider` exactly. Verify with:
 ```python
-get_provider_request_timeout("custom:local-llm", "278")  # should return 3600.0, not None
-get_provider_stale_timeout("custom:local-llm", "278")     # should return 3600.0, not None
+get_provider_request_timeout("custom:local-llm", "278")  # should return 7200.0, not None
+get_provider_stale_timeout("custom:local-llm", "278")     # should return 7200.0, not None
 ```
 
 **Warning:** The `providers` key **must exactly match** `model.provider`, including the `custom:` prefix. This is not documented in Hermes and easy to overlook.
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9692 Vulkan · 2026-06-03 · Updated 2026-06-20 (b9692 perf data, cache-ram 49152/65536, Hermes v0.15.2, timeout 7200s)*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9692 Vulkan · 2026-06-20*

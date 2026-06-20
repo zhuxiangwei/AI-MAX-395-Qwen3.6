@@ -767,16 +767,33 @@ QClaw (OpenClaw) — personal AI assistant with multi-channel support (WeChat, Q
 
 #### TTS Voice Synthesis Service
 
-Qwen3-TTS 1.7B model runs on pure CPU, providing voice output for the monitoring broadcast system and voice assistant.
+Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for the monitoring broadcast system and voice assistant. Supports 9 preset speakers (including Chinese female voices vivian/serena).
 
 | Item | Details |
 |------|---------|
-| Model | Qwen3-TTS-12Hz-1.7B-Base |
-| Path | `/home/zxw/model/tts-1.7b-base/` |
+| Model | Qwen3-TTS-12Hz-1.7B-CustomVoice |
+| Path | `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
 | Service | systemd user service `qwen-tts.service` (port 9900, enabled) |
 | Startup script | `/home/zxw/scripts/qwen-tts.sh` |
+| Startup params | `--seed 42 -S` (seed fixes randomness, -S streaming mode) |
 | Performance | RTF ~1.8-2.5 (pure CPU 8 threads), short text ~2.9s |
 | Memory | ~3.2 GB |
+
+**Preset speakers:**
+
+| Speaker | Language | Gender |
+|---------|----------|--------|
+| vivian | Chinese | Female |
+| serena | Chinese | Female |
+| ryan | Chinese | Male (default) |
+| uncle_fu | Chinese | Male |
+| dylan | Chinese | Male |
+| eric | Chinese | Male |
+| ono_anna | Japanese | Female |
+| sohee | Korean | Female |
+| jessica | English | Female |
+
+> ⚠️ Previously using Base model with empty `spk_id`, speaker parameter was ignored and all output was default male voice. CustomVoice model includes preset speaker mappings. Base model retained at `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-Base/` but no longer loaded.
 
 **API endpoints:**
 
@@ -791,7 +808,7 @@ Qwen3-TTS 1.7B model runs on pure CPU, providing voice output for the monitoring
 ```bash
 curl -s -X POST http://127.0.0.1:9900/v1/tts \
   -H 'Content-Type: application/json' \
-  -d '{"text":"Monitoring started","speaker":3061,"volume":0.3}' \
+  -d '{"text":"Monitoring started","speaker":"vivian","language":"chinese","volume":80}' \
   -o /tmp/tts_out.wav
 ```
 
@@ -920,6 +937,8 @@ Automated monitoring and TTS broadcast service that monitors LLM inference statu
 - CRIT alerts (severity ≥ 3) jump to queue head
 - Playback: streaming pre-buffer mode — estimates audio duration, pre-fills 80% buffer, then starts `aplay` via FIFO pipe while TTS continues streaming
 - No fallback to non-streaming TTS (removed in production); if streaming fails, the broadcast is skipped
+
+**System volume:** ALSA Master 100%, TTS engine volume=80%. Four-level volume control: TTS engine → ALSA PCM 100% → ALSA Speaker 100% → ALSA Master 100%.
 
 **Core constraint:** ASR and TTS run on pure CPU; LLM runs on GPU. This ensures voice processing never competes with LLM inference for GPU resources.
 

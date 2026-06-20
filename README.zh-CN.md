@@ -767,16 +767,33 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、网页
 
 #### TTS 语音合成服务
 
-Qwen3-TTS 1.7B 模型纯 CPU 运行，为监控广播系统和语音助手提供语音输出。
+Qwen3-TTS 1.7B CustomVoice 模型纯 CPU 运行，为监控广播系统和语音助手提供语音输出。支持 9 种预置音色（含中文女声 vivian/serena）。
 
 | 项目 | 详情 |
 |------|---------|
-| 模型 | Qwen3-TTS-12Hz-1.7B-Base |
-| 路径 | `/home/zxw/model/tts-1.7b-base/` |
+| 模型 | Qwen3-TTS-12Hz-1.7B-CustomVoice |
+| 路径 | `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
 | 服务 | systemd 用户服务 `qwen-tts.service`（端口 9900，已启用） |
 | 启动脚本 | `/home/zxw/scripts/qwen-tts.sh` |
+| 启动参数 | `--seed 42 -S`（seed 固定随机性，-S 流式模式） |
 | 性能 | RTF ~1.8-2.5（纯 CPU 8 线程），短文本 ~2.9s |
 | 内存 | ~3.2 GB |
+
+**预置音色：**
+
+| Speaker | 语言 | 性别 |
+|---------|------|------|
+| vivian | 中文 | 女 |
+| serena | 中文 | 女 |
+| ryan | 中文 | 男（默认） |
+| uncle_fu | 中文 | 男 |
+| dylan | 中文 | 男 |
+| eric | 中文 | 男 |
+| ono_anna | 日语 | 女 |
+| sohee | 韩语 | 女 |
+| jessica | 英语 | 女 |
+
+> ⚠️ 之前使用 Base 模型时 `spk_id` 为空，speaker 参数被忽略，所有输出均为默认男声。CustomVoice 模型包含预置 speaker 映射，speaker 参数生效。Base 模型保留在 `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-Base/` 但不再加载。
 
 **API 端点：**
 
@@ -791,7 +808,7 @@ Qwen3-TTS 1.7B 模型纯 CPU 运行，为监控广播系统和语音助手提供
 ```bash
 curl -s -X POST http://127.0.0.1:9900/v1/tts \
   -H 'Content-Type: application/json' \
-  -d '{"text":"Monitoring started","speaker":3061,"volume":0.3}' \
+  -d '{"text":"监控播报系统已上线","speaker":"vivian","language":"chinese","volume":80}' \
   -o /tmp/tts_out.wav
 ```
 
@@ -920,6 +937,8 @@ exec "$SERVER" \
 - CRIT 告警（severity ≥ 3）插队到队首
 - 播放：流式预缓冲模式 — 估算音频时长，预填 80% 缓冲区后启动 `aplay` 通过 FIFO 管道边生成边播放
 - 无非流式 fallback（生产版已移除）；流式失败则跳过本次播报
+
+**系统音量：** ALSA Master 100%，TTS 引擎音量 volume=80%。四级音量控制：TTS 引擎 → ALSA PCM 100% → ALSA Speaker 100% → ALSA Master 100%。
 
 **核心约束：** ASR 和 TTS 纯 CPU 运行；LLM 在 GPU 上运行。确保语音处理不会与 LLM 推理争抢 GPU 资源。
 

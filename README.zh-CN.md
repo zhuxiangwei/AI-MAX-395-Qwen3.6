@@ -886,7 +886,7 @@ exec "$SERVER" \
 - `monitor-broadcast.py` — 监控广播系统脚本
 - `voice_assistant_monitor_requirements.md` — 需求文档
 
-**监控广播系统（v6，生产版）：**
+**监控广播系统（v7，生产版）：**
 
 自动化监控和 TTS 广播服务，实时监控 LLM 推理状态和硬件健康。
 
@@ -928,8 +928,6 @@ exec "$SERVER" \
 **监控广播管道（已上线）：** 独立线程监控硬件（GPU/CPU/RAM）+ 日志告警 → TTS 广播。
 
 **状态持久化：** `~/.config/monitor-broadcast/state.json` 存储文件 offset、告警冷却、当前模型/端口、播报元数据。瞬态状态（`_active_task`、`_last_gen_milestone`）仅运行时有效，不持久化。
-
-**代码审计：** 详见 `ai-station-angle/CODE_AUDIT.md`。
 
 ### 验证清单
 

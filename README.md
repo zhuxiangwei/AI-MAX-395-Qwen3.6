@@ -886,7 +886,7 @@ Application suite located in the repository at `ai-station-angle/`, providing mo
 - `monitor-broadcast.py` — Monitoring broadcast system script
 - `voice_assistant_monitor_requirements.md` — Requirements document
 
-**Monitoring Broadcast System (v6, production):**
+**Monitoring Broadcast System (v7, production):**
 
 Automated monitoring and TTS broadcast service that monitors LLM inference status and hardware health in real-time.
 
@@ -928,8 +928,6 @@ Automated monitoring and TTS broadcast service that monitors LLM inference statu
 **Monitoring broadcast pipeline (active):** Independent thread monitors hardware (GPU/CPU/RAM) + log alerts → TTS broadcast.
 
 **State persistence:** `~/.config/monitor-broadcast/state.json` stores file offsets, alert cooldowns, current model/port, and broadcast metadata. Transient state (`_active_task`, `_last_gen_milestone`) is runtime-only and not persisted.
-
-**Code audit:** See `ai-station-angle/CODE_AUDIT.md` for a detailed code audit report.
 
 ### Verification Checklist
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-监控播报系统 v6 - LLM Log Monitor + Hardware Speaker
+监控播报系统 v7 - LLM Log Monitor + Hardware Speaker
 
 双频率轮询：
   - 快速轮询 (180s): 模型切换 + 推理任务状态变化（开始/prefill完成/结束/空闲）
@@ -17,9 +17,14 @@ TTS 播放策略：
   2. ALSA PCM 音量: 100% (aplay 直出通道)
   3. ALSA Speaker/Headphone: 100% (播放通道)
   4. ALSA Master: 100% (系统主音量)
+
+自身日志轮转：
+  - 使用 logging.handlers.RotatingFileHandler，单个文件 5MB，保留 3 个备份
+  - 日志文件: /home/zxw/logs/monitor/monitor.log
 """
 import http.client
 import json
+import logging
 import os
 import random
 import re
@@ -29,6 +34,7 @@ import sys
 import threading
 import time
 from collections import deque
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -39,6 +45,8 @@ LOG_DIR = Path("/home/zxw/logs")
 ROUTER_LOG = LOG_DIR / "llama" / "router.log"
 GPU_TEMP_LOG = LOG_DIR / "gpu-temp.log"
 STATE_FILE = Path("/home/zxw/.config/monitor-broadcast/state.json")
+MONITOR_LOG_DIR = LOG_DIR / "monitor"
+MONITOR_LOG_FILE = MONITOR_LOG_DIR / "monitor.log"
 TTS_URL = "http://127.0.0.1:9900/v1/tts"
 TTS_SPEAKER = "vivian"    # 中文女声
 TTS_VOLUME = 1.0          # TTS 引擎音量 100%
@@ -55,6 +63,9 @@ DAILY_INTERVAL = 1800     # 日常播报 30 分钟
 
 # TTS 队列最大长度，超过直接丢弃不入队
 TTS_QUEUE_MAX = 3
+
+# HTTP 超时（秒）
+HTTP_TIMEOUT = 30
 
 # ============ 硬件阈值 ============
 GPU_TEMP_WARN = 80
@@ -92,13 +103,38 @@ GPU_TEMP_LOG_RE = re.compile(
 )
 
 # ============ 全局退出标志 ============
-_running = True
+_stop_event = threading.Event()
 
 
 def _handle_sigterm(signum, frame):
-    global _running
-    _running = False
-    print(f"[Monitor] 收到信号 {signum}，准备退出...")
+    _stop_event.set()
+    # 信号处理函数中只使用异步信号安全函数
+    os.write(sys.stderr.fileno(), f"[Monitor] 收到信号 {signum}，准备退出...\n".encode())
+
+# ============ 日志配置 ============
+def setup_logging():
+    """配置日志：同时输出到文件（轮转）和 stderr。"""
+    MONITOR_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler = RotatingFileHandler(
+        MONITOR_LOG_FILE,
+        maxBytes=5 * 1024 * 1024,  # 5MB
+        backupCount=3,
+        encoding='utf-8',
+    )
+    file_handler.setFormatter(formatter)
+    # stderr handler (for systemd journal)
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(formatter)
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(file_handler)
+    logger.addHandler(stderr_handler)
+
+
 # ============ 播报文案 ============
 class BroadcastTexts:
     OOM = ["严重警告！显存溢出！", "紧急！OOM 告警！"]
@@ -259,6 +295,7 @@ def estimate_audio_duration(text):
     other = len(no_num) - cn_count - en_count
     duration += cn_count * 0.30 + en_count * 0.04 + other * 0.08
     return max(duration, 0.5)
+
 # ============ TTS 请求工具 ============
 def _build_tts_payload(text):
     """构建 TTS 请求 payload，强制中文语言。
@@ -273,7 +310,6 @@ def _build_tts_payload(text):
     }, ensure_ascii=False).encode("utf-8")
 
 
-
 # ============ TTS 队列 ============
 class TTSQueue:
     """TTS 播报队列，单线程发送。"""
@@ -283,6 +319,7 @@ class TTSQueue:
         self._lock = threading.Lock()
         self._worker = None
         self._sent_count = 0
+        self._fail_count = 0
 
     def start(self):
         self._worker = threading.Thread(target=self._run, daemon=True, name="tts-worker")
@@ -292,7 +329,7 @@ class TTSQueue:
         """入队。队列满时直接丢弃，不入队。"""
         with self._lock:
             if len(self._queue) >= TTS_QUEUE_MAX:
-                print(f'[Queue] 丢弃: "{text[:40]}" (队列已满 {TTS_QUEUE_MAX} 条)')
+                logging.info(f'[Queue] 丢弃: "{text[:40]}" (队列已满 {TTS_QUEUE_MAX} 条)')
                 return
             if priority >= 3:
                 idx = 0
@@ -306,10 +343,10 @@ class TTSQueue:
             else:
                 self._queue.append((text, priority, tag))
             qsize = len(self._queue)
-        print(f'[Queue] +"{text[:40]}" (pri={priority}, qsize={qsize})')
+        logging.info(f'[Queue] +"{text[:40]}" (pri={priority}, qsize={qsize})')
 
     def _run(self):
-        while _running:
+        while not _stop_event.is_set():
             item = None
             with self._lock:
                 if self._queue:
@@ -342,14 +379,17 @@ class TTSQueue:
         # 限制范围：32KB ~ 1MB
         prebuffer_bytes = max(32 * 1024, min(1024 * 1024, prebuffer_bytes))
 
-        print(f"[TTS] 流式: \"{text[:50]}\" (估时 {est_duration:.1f}s, 预缓冲 {prebuffer_sec:.1f}s / {prebuffer_bytes} bytes)")
+        logging.info(f"[TTS] 流式: \"{text[:50]}\" (估时 {est_duration:.1f}s, 预缓冲 {prebuffer_sec:.1f}s / {prebuffer_bytes} bytes)")
 
         payload = _build_tts_payload(text)
         t0 = time.time()
         fifo_path = None
+        conn = None
+        writer_thread = None
+        aplay = None
 
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", 9900, timeout=120)
+            conn = http.client.HTTPConnection("127.0.0.1", 9900, timeout=HTTP_TIMEOUT)
             conn.request("POST", "/v1/tts/stream",
                          body=payload,
                          headers={"Content-Type": "application/json"})
@@ -357,8 +397,9 @@ class TTSQueue:
 
             if resp.status != 200:
                 body = resp.read()
-                print(f"[TTS] HTTP {resp.status}: {body[:200]}")
+                logging.error(f"[TTS] HTTP {resp.status}: {body[:200]}")
                 conn.close()
+                conn = None
                 return
 
             # Phase 1: 预缓冲 - 积累数据到内存
@@ -371,34 +412,42 @@ class TTSQueue:
 
             prebuffer_time = time.time() - t0
             prebuffer_audio_sec = len(prebuffer) / TTS_BYTES_PER_SEC
-            print(f"[Prebuf] 预缓冲完成: {len(prebuffer)} bytes ({prebuffer_audio_sec:.2f}s audio), 耗时 {prebuffer_time:.1f}s")
+            logging.info(f"[Prebuf] 预缓冲完成: {len(prebuffer)} bytes ({prebuffer_audio_sec:.2f}s audio), 耗时 {prebuffer_time:.1f}s")
 
             # Phase 2: 创建 FIFO + 启动 aplay + 写入数据
             fifo_path = f"/tmp/tts_fifo_{os.getpid()}_{time.time()}"
             os.mkfifo(fifo_path, 0o600)
 
+            # writer 线程退出标志
+            writer_stop = threading.Event()
+
             def _fifo_writer():
                 """后台线程：写入 prebuffer + 持续流式数据到 FIFO。"""
+                fd = -1
                 try:
                     fd = os.open(fifo_path, os.O_WRONLY)
                     if prebuffer:
                         os.write(fd, bytes(prebuffer))
-                    while True:
+                    while not writer_stop.is_set():
                         chunk = resp.read(32768)
                         if not chunk:
                             break
                         os.write(fd, chunk)
-                    os.close(fd)
-                    conn.close()
                 except BrokenPipeError:
                     pass
                 except Exception as e:
-                    print(f"[Writer] 异常: {e}")
+                    logging.error(f"[Writer] 异常: {e}")
                 finally:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+                    if fd >= 0:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                    if conn:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
 
             writer_thread = threading.Thread(target=_fifo_writer, daemon=True)
             writer_thread.start()
@@ -414,24 +463,49 @@ class TTSQueue:
                 stderr=subprocess.DEVNULL,
             )
 
-            writer_thread.join(timeout=120)
+            writer_thread.join(timeout=HTTP_TIMEOUT)
+            if writer_thread.is_alive():
+                logging.warning("[Writer] 线程超时，强制停止")
+                writer_stop.set()
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
             try:
                 aplay.wait(timeout=est_duration * 2 + 10)
             except subprocess.TimeoutExpired:
-                print("[Play] aplay 超时，强制终止")
+                logging.warning("[Play] aplay 超时，强制终止")
                 aplay.kill()
                 aplay.wait()
 
             elapsed = time.time() - t0
             total = len(prebuffer)
-            print(f"[TTS] 流式 OK: \"{text[:50]}\" ({total} bytes prebuffer, {elapsed:.1f}s total)")
+            logging.info(f"[TTS] 流式 OK: \"{text[:50]}\" ({total} bytes prebuffer, {elapsed:.1f}s total)")
 
         except Exception as e:
-            print(f"[TTS] 流式异常: {e}")
-            import traceback
-            traceback.print_exc()
+            logging.error(f"[TTS] 流式异常: {e}", exc_info=True)
+            self._fail_count += 1
             # 流式失败，无 fallback，直接放弃本次播报
         finally:
+            # 清理顺序：先停 writer，再 kill aplay，最后删 FIFO
+            if writer_thread and writer_thread.is_alive():
+                writer_stop.set()
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                writer_thread.join(timeout=5)
+            if aplay and aplay.poll() is None:
+                aplay.kill()
+                aplay.wait()
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             if fifo_path:
                 try:
                     os.unlink(fifo_path)
@@ -443,6 +517,7 @@ class TTSQueue:
     def queue_size(self):
         with self._lock:
             return len(self._queue)
+
 # ============ 增量文件读取 ============
 def read_new_lines(filepath, offset):
     new_lines = []
@@ -461,7 +536,7 @@ def read_new_lines(filepath, offset):
     except FileNotFoundError:
         pass
     except IOError as e:
-        print(f"[READ] {filepath}: {e}")
+        logging.error(f"[READ] {filepath}: {e}")
     return new_lines, new_offset
 
 
@@ -606,14 +681,13 @@ def analyze_gpu_temp_lines(lines):
             line_alerts.sort(key=lambda a: -a["severity"])
             alerts.append(line_alerts[0])
     return alerts
+
 # ============ 状态管理 ============
 def load_state():
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE, "r") as f:
                 s = json.load(f)
-            if isinstance(s.get("active_tasks"), list):
-                s["active_tasks"] = set(s["active_tasks"])
             return s
         except (json.JSONDecodeError, IOError):
             pass
@@ -621,7 +695,7 @@ def load_state():
         "file_offsets": {},
         "last_broadcast_time": 0,
         "last_broadcast_type": "",
-        "active_tasks": set(),
+        "last_daily_report_time": 0,
         "total_launched": 0,
         "completed_tasks": 0,
         "alert_cooldown": {},
@@ -631,19 +705,23 @@ def load_state():
 
 
 def save_state(state):
+    """原子写入 state.json：先写临时文件，再 rename 替换。"""
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = {k: v for k, v in state.items() if not k.startswith("_")}
-        data["active_tasks"] = list(state.get("active_tasks", set()))
-        with open(STATE_FILE, "w") as f:
+        tmp_path = str(STATE_FILE) + ".tmp"
+        with open(tmp_path, "w") as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, STATE_FILE)
     except IOError as e:
-        print(f"[STATE] 保存失败: {e}")
+        logging.error(f"[STATE] 保存失败: {e}")
 
 
 # ============ 慢速轮询播报决策 ============
 def decide_slow_broadcast(alerts, state):
-    """慢速轮询的告警决策，返回 (text, tag) 或 None"""
+    """慢速轮询的告警决策，返回 (text, tag, priority) 或 None"""
     now = time.time()
     cooldown_ok = (now - state["last_broadcast_time"]) >= COOLDOWN
 
@@ -669,15 +747,15 @@ def decide_slow_broadcast(alerts, state):
             text = BroadcastTexts.pick(category, **kwargs)
             if text:
                 state["alert_cooldown"][atype] = now
-                return text, atype
+                return text, atype, 3
 
     if not cooldown_ok:
-        return None, ""
+        return None, "", 0
 
     # P2: 一般错误
     errors = [a for a in alerts if a["severity"] == 2]
     if errors:
-        return BroadcastTexts.pick("ERROR"), "error"
+        return BroadcastTexts.pick("ERROR"), "error", 1
 
     # P3: 硬件警告
     hw_warns = [a for a in alerts if a["severity"] == 1 and a["type"].startswith("hw_")]
@@ -693,19 +771,19 @@ def decide_slow_broadcast(alerts, state):
         category, kwargs = hw_map.get(atype, ("HW_MEM_WARN", {}))
         text = BroadcastTexts.pick(category, **kwargs)
         if text:
-            return text, atype
+            return text, atype, 1
 
-    # P4: 日常播报 (含系统状态)
-    if (now - state.get("last_broadcast_time", 0)) >= DAILY_INTERVAL:
-        active = bool(state.get("active_tasks"))
+    # P4: 日常播报（独立计时，不依赖 last_broadcast_time）
+    if (now - state.get("last_daily_report_time", 0)) >= DAILY_INTERVAL:
+        active = state.get("_active_task") is not None
         status_text = BroadcastTexts.pick("BUSY" if active else "QUIET")
         daily_report = build_daily_report()
         if status_text:
             if daily_report:
-                return f"{status_text} {daily_report}", "daily"
-            return status_text, "daily"
+                return f"{status_text} {daily_report}", "daily", 0
+            return status_text, "daily", 0
 
-    return None, ""
+    return None, "", 0
 
 
 # ============ 主循环 ============
@@ -713,13 +791,17 @@ def main():
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT, _handle_sigterm)
 
-    print(f"[Monitor] 启动监控播报系统 v6 (流式预缓冲 80% TTS + 系统状态播报)")
-    print(f"[Monitor] 高频轮询: {FAST_POLL}s (模型+任务) | 低频轮询: {SLOW_POLL}s (硬件+告警)")
-    print(f"[Monitor] TTS: {TTS_URL}")
-    print(f"[Monitor] speaker={TTS_SPEAKER} volume={TTS_VOLUME} language=chinese")
-    print(f"[Monitor] 队列最大: {TTS_QUEUE_MAX} 条，超出直接丢弃")
-    print(f"[Monitor] 日志: {ROUTER_LOG}")
-    print(f"[Monitor] 硬件: {GPU_TEMP_LOG}")
+    setup_logging()
+
+    logging.info(f"[Monitor] 启动监控播报系统 v7 (流式预缓冲 80% TTS + 系统状态播报)")
+    logging.info(f"[Monitor] 高频轮询: {FAST_POLL}s (模型+任务) | 低频轮询: {SLOW_POLL}s (硬件+告警)")
+    logging.info(f"[Monitor] TTS: {TTS_URL}")
+    logging.info(f"[Monitor] speaker={TTS_SPEAKER} volume={TTS_VOLUME} language=chinese")
+    logging.info(f"[Monitor] 队列最大: {TTS_QUEUE_MAX} 条，超出直接丢弃")
+    logging.info(f"[Monitor] HTTP 超时: {HTTP_TIMEOUT}s")
+    logging.info(f"[Monitor] 日志: {ROUTER_LOG}")
+    logging.info(f"[Monitor] 硬件: {GPU_TEMP_LOG}")
+    logging.info(f"[Monitor] 自身日志: {MONITOR_LOG_FILE} (5MB x3 轮转)")
 
     state = load_state()
     offsets = state.get("file_offsets", {})
@@ -729,10 +811,10 @@ def main():
         if fp not in offsets:
             try:
                 offsets[fp] = fpath.stat().st_size
-                print(f"[Monitor] {fpath.name}: 从末尾开始 (offset={offsets[fp]})")
+                logging.info(f"[Monitor] {fpath.name}: 从末尾开始 (offset={offsets[fp]})")
             except FileNotFoundError:
                 offsets[fp] = 0
-                print(f"[Monitor] {fpath.name}: 不存在")
+                logging.info(f"[Monitor] {fpath.name}: 不存在")
     state["file_offsets"] = offsets
 
     state["_active_task"] = None
@@ -743,7 +825,7 @@ def main():
 
     fast_counter = 0
 
-    while _running:
+    while not _stop_event.is_set():
         try:
             # 快速轮询：router.log（模型+任务）
             fp = str(ROUTER_LOG)
@@ -757,7 +839,7 @@ def main():
                     state["last_broadcast_time"] = time.time()
                     state["last_broadcast_type"] = tag
                 if fast_broadcasts:
-                    print(f"[Fast] {ROUTER_LOG.name}: {len(fast_broadcasts)} 播报")
+                    logging.info(f"[Fast] {ROUTER_LOG.name}: {len(fast_broadcasts)} 播报")
 
             # 慢速轮询
             if fast_counter >= SLOW_POLL // FAST_POLL:
@@ -765,15 +847,16 @@ def main():
 
                 all_alerts = []
 
-                slow_fp = str(ROUTER_LOG) + ":slow"
-                slow_offset = state["file_offsets"].get(slow_fp, state["file_offsets"].get(fp, 0))
+                # 慢速轮询复用快速轮询的 offset（不再维护独立 slow offset）
+                # 读取快速轮询之后的增量日志，仅做告警分析
+                slow_offset = state["file_offsets"].get(fp, 0)
                 slow_lines, slow_new_offset = read_new_lines(ROUTER_LOG, slow_offset)
                 if slow_lines:
-                    state["file_offsets"][slow_fp] = slow_new_offset
+                    state["file_offsets"][fp] = slow_new_offset
                     alerts = analyze_router_slow(slow_lines)
                     all_alerts.extend(alerts)
                     if alerts:
-                        print(f"[Slow] {ROUTER_LOG.name}: {len(alerts)} 告警")
+                        logging.info(f"[Slow] {ROUTER_LOG.name}: {len(alerts)} 告警")
 
                 fp_gpu = str(GPU_TEMP_LOG)
                 offset_gpu = state["file_offsets"].get(fp_gpu, 0)
@@ -783,31 +866,31 @@ def main():
                     hw_alerts = analyze_gpu_temp_lines(gpu_lines)
                     all_alerts.extend(hw_alerts)
                     if hw_alerts:
-                        print(f"[Slow] {GPU_TEMP_LOG.name}: {len(hw_alerts)} 告警")
+                        logging.info(f"[Slow] {GPU_TEMP_LOG.name}: {len(hw_alerts)} 告警")
 
-                text, btype = decide_slow_broadcast(all_alerts, state)
-                if text:
-                    pri = 3 if any(a["severity"] == 3 for a in all_alerts if a["type"] == btype) else 1
+                result = decide_slow_broadcast(all_alerts, state)
+                if result and result[0]:
+                    text, btype, pri = result
                     tts.put(text, priority=pri, tag=btype)
                     state["last_broadcast_time"] = time.time()
                     state["last_broadcast_type"] = btype
+                    if btype == "daily":
+                        state["last_daily_report_time"] = time.time()
 
             save_state(state)
             fast_counter += 1
 
         except Exception as e:
-            print(f"[Error] {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
+            logging.error(f"[Error] {e}", exc_info=True)
 
-        if _running:
+        if not _stop_event.is_set():
             for _ in range(FAST_POLL):
-                if not _running:
+                if _stop_event.is_set():
                     break
                 time.sleep(1)
 
     save_state(state)
-    print("[Monitor] 已退出")
+    logging.info("[Monitor] 已退出")
 
 
 if __name__ == "__main__":

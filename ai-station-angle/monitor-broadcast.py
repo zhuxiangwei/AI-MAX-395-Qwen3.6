@@ -192,26 +192,6 @@ def get_cpu_load():
         return None
 
 
-def get_cpu_temp():
-    """获取 CPU 温度 (°C)，作为 APU 温度 fallback"""
-    try:
-        for tz in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
-            type_file = tz / "type"
-            temp_file = tz / "temp"
-            if type_file.exists() and temp_file.exists():
-                ttype = type_file.read_text().strip().lower()
-                if "x86" in ttype or "cpu" in ttype:
-                    temp = int(temp_file.read_text().strip()) / 1000
-                    return round(temp, 1)
-        for tz in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
-            temp_file = tz / "temp"
-            if temp_file.exists():
-                temp = int(temp_file.read_text().strip()) / 1000
-                return round(temp, 1)
-    except Exception:
-        pass
-    return None
-
 
 def get_system_memory():
     """获取内存使用率"""
@@ -265,11 +245,6 @@ def build_daily_report():
     if gpu:
         parts.append(f"GPU {gpu['gpu_busy']}%")
         parts.append(f"温度 {gpu['gpu_temp']} 度")
-    else:
-        cpu_temp = get_cpu_temp()
-        if cpu_temp is not None:
-            parts.append(f"温度 {cpu_temp} 度")
-
     # 内存
     mem_pct = get_system_memory()
     if mem_pct is not None:

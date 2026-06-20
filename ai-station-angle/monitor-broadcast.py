@@ -13,7 +13,7 @@ TTS 播放策略：
   - 任务编号逐位中文朗读
 
 音量四级控制（set-audio-volume.sh）：
-  1. TTS 引擎音量: TTS_VOLUME = 1.0 (API 参数)
+  1. TTS 引擎音量: TTS_VOLUME = 0.8 (API 参数)
   2. ALSA PCM 音量: 100% (aplay 直出通道)
   3. ALSA Speaker/Headphone: 100% (播放通道)
   4. ALSA Master: 100% (系统主音量)
@@ -49,7 +49,7 @@ MONITOR_LOG_DIR = LOG_DIR / "monitor"
 MONITOR_LOG_FILE = MONITOR_LOG_DIR / "monitor.log"
 TTS_URL = "http://127.0.0.1:9900/v1/tts"
 TTS_SPEAKER = "vivian"    # 中文女声
-TTS_VOLUME = 1.0          # TTS 引擎音量 100%
+TTS_VOLUME = 0.8          # TTS 引擎音量 80%
 
 # TTS 音频参数
 TTS_SAMPLE_RATE = 24000    # 采样率 Hz

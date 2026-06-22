@@ -283,7 +283,7 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880 processor.max_cs
 **编译 llama.cpp：**
 
 ```bash
-cd ~/llama/llama.cpp
+cd ~/llama.cpp
 git pull origin master                    # update source
 cmake -B build --fresh \
   -DGGML_VULKAN=ON \
@@ -298,7 +298,7 @@ cmake --build build -j$(nproc)
 | 项目 | 路径 |
 |------|------|
 | 模型文件 + preset INI | `$HOME/model/` |
-| llama-server 二进制 | `$HOME/llama/llama.cpp/build/bin/llama-server` |
+| llama-server 二进制 | `$HOME/llama.cpp/build/bin/llama-server` |
 | Router preset（所有模型） | `$HOME/model/router-preset.ini` |
 
 ### 模型清单
@@ -775,7 +775,7 @@ Qwen3-TTS 1.7B CustomVoice 模型纯 CPU 运行，为监控广播系统和语音
 | 路径 | `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
 | 服务 | systemd 用户服务 `qwen-tts.service`（端口 9900，已启用） |
 | 启动脚本 | `/home/zxw/scripts/qwen-tts.sh` |
-| 启动参数 | `--seed 42 -S`（seed 固定随机性，-S 流式模式） |
+| 启动参数 | `-S`（流式模式） |
 | 性能 | RTF ~1.8-2.5（纯 CPU 8 线程），短文本 ~2.9s |
 | 内存 | ~3.2 GB |
 
@@ -808,7 +808,7 @@ Qwen3-TTS 1.7B CustomVoice 模型纯 CPU 运行，为监控广播系统和语音
 ```bash
 curl -s -X POST http://127.0.0.1:9900/v1/tts \
   -H 'Content-Type: application/json' \
-  -d '{"text":"监控播报系统已上线","speaker":"vivian","language":"chinese","volume":80}' \
+  -d '{"text":"监控播报系统已上线","speaker":"vivian","language":"chinese","seed":42}' \
   -o /tmp/tts_out.wav
 ```
 
@@ -1022,7 +1022,7 @@ ctx-size = 786432
 
 **崩溃输出：**
 ```
-/home/$USER/llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
+/home/$USER/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
 ```
 
 **根本原因：** Vulkan 后端使用 device-only（统一）内存缓冲区。按槽位的 KV cache tensor 在主机侧 `tensor->data == NULL`（数据在 GPU 上）。`ggml_backend_tensor_get()` 及相关函数无条件断言 `tensor->data != NULL`，当 prompt cache 系统尝试保存/恢复槽位状态（包括 MTP draft 上下文）时失败。崩溃发生在两条路径：

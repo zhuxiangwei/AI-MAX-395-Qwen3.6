@@ -283,7 +283,7 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880 processor.max_cs
 **Building llama.cpp:**
 
 ```bash
-cd ~/llama/llama.cpp
+cd ~/llama.cpp
 git pull origin master                    # update source
 cmake -B build --fresh \
   -DGGML_VULKAN=ON \
@@ -298,7 +298,7 @@ cmake --build build -j$(nproc)
 | Item | Path |
 |------|------|
 | Model files + preset INI | `$HOME/model/` |
-| llama-server binary | `$HOME/llama/llama.cpp/build/bin/llama-server` |
+| llama-server binary | `$HOME/llama.cpp/build/bin/llama-server` |
 | Router preset (all models) | `$HOME/model/router-preset.ini` |
 
 ### Model Inventory
@@ -775,7 +775,7 @@ Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for th
 | Path | `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
 | Service | systemd user service `qwen-tts.service` (port 9900, enabled) |
 | Startup script | `/home/zxw/scripts/qwen-tts.sh` |
-| Startup params | `--seed 42 -S` (seed fixes randomness, -S streaming mode) |
+| Startup params | `-S` (streaming mode) |
 | Performance | RTF ~1.8-2.5 (pure CPU 8 threads), short text ~2.9s |
 | Memory | ~3.2 GB |
 
@@ -808,7 +808,7 @@ Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for th
 ```bash
 curl -s -X POST http://127.0.0.1:9900/v1/tts \
   -H 'Content-Type: application/json' \
-  -d '{"text":"Monitoring started","speaker":"vivian","language":"chinese","volume":80}' \
+  -d '{"text":"Monitoring started","speaker":"vivian","language":"chinese","seed":42}' \
   -o /tmp/tts_out.wav
 ```
 
@@ -1022,7 +1022,7 @@ ctx-size = 786432
 
 **Crash output:**
 ```
-/home/$USER/llama/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
+/home/$USER/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
 ```
 
 **Root cause:** Vulkan backend uses device-only (unified) memory buffers. Per-slot KV cache tensors have `tensor->data == NULL` on the host side (data lives on GPU). `ggml_backend_tensor_get()` and related functions unconditionally assert `tensor->data != NULL`, which fails when the prompt cache system attempts to save/restore slot state (including MTP draft context). The crash occurs in two paths:

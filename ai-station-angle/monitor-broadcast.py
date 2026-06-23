@@ -7,16 +7,17 @@
   - 慢速轮询 (300s): 硬件告警 + 日志 E/F 级别 + 日常播报
 
 TTS 播放策略：
-  - 所有文本走流式预缓冲 - 预填 80% 缓冲区，再启动 aplay 边生成边播放
+  - 默认非流式模式：完整生成 WAV 后播放（优先稳定性）
+  - 流式预缓冲模式保留（_speak_prebuffer），通过 TTS_USE_STREAM 开关切换
   - 所有 TTS 请求强制 language=chinese + ensure_ascii=False
   - 日常播报包含 CPU 负载、GPU 负载、温度、内存信息
   - 任务编号逐位中文朗读
 
-音量四级控制（set-audio-volume.sh）：
-  1. TTS 引擎音量: TTS_VOLUME = 0.8 (API 参数)
-  2. ALSA PCM 音量: 100% (aplay 直出通道)
-  3. ALSA Speaker/Headphone: 100% (播放通道)
-  4. ALSA Master: 100% (系统主音量)
+音量控制（ALSA 系统级）：
+  1. ALSA PCM 音量（播放通道）
+  2. ALSA Speaker/Headphone（输出通道）
+  3. ALSA Master（系统主音量）
+  注：TTS API 不支持 volume 参数，音量由 ALSA 系统级控制
 
 自身日志轮转：
   - 使用 logging.handlers.RotatingFileHandler，单个文件 5MB，保留 3 个备份
@@ -49,7 +50,8 @@ MONITOR_LOG_DIR = LOG_DIR / "monitor"
 MONITOR_LOG_FILE = MONITOR_LOG_DIR / "monitor.log"
 TTS_URL = "http://127.0.0.1:9900/v1/tts"
 TTS_SPEAKER = "vivian"    # 中文女声
-TTS_VOLUME = 0.8          # TTS 引擎音量 80%
+TTS_SEED = 42             # 固定种子，确保同一文本音色一致
+TTS_USE_STREAM = False    # False=非流式(默认,稳定), True=流式预缓冲
 
 # TTS 音频参数
 TTS_SAMPLE_RATE = 24000    # 采样率 Hz
@@ -280,8 +282,8 @@ def _build_tts_payload(text):
     return json.dumps({
         "text": text,
         "speaker": TTS_SPEAKER,
-        "volume": TTS_VOLUME,
         "language": "chinese",
+        "seed": TTS_SEED,
     }, ensure_ascii=False).encode("utf-8")
 
 
@@ -334,8 +336,87 @@ class TTSQueue:
             self._sent_count += 1
 
     def _speak(self, text):
-        """TTS 合成 + 播放。所有文本走流式预缓冲。"""
-        self._speak_prebuffer(text)
+        """TTS 合成 + 播放。默认非流式，可通过 TTS_USE_STREAM 切换。"""
+        if TTS_USE_STREAM:
+            self._speak_prebuffer(text)
+        else:
+            self._speak_wav(text)
+
+    def _speak_wav(self, text):
+        """非流式 TTS：完整生成 WAV 再播放。优先稳定性。
+
+        流程：
+        1. POST /v1/tts（非流式），等待完整 WAV 数据返回
+        2. 写入临时文件
+        3. aplay -D default 播放
+        4. 清理临时文件
+        """
+        est_duration = estimate_audio_duration(text)
+        logging.info(f"[TTS] 非流式: \"{text[:50]}\" (估时 {est_duration:.1f}s)")
+
+        payload = _build_tts_payload(text)
+        t0 = time.time()
+        wav_path = None
+        conn = None
+
+        try:
+            # 请求 TTS，超时设为估算时长的 5 倍 + 30s 兜底
+            tts_timeout = max(int(est_duration * 5) + 30, HTTP_TIMEOUT)
+            conn = http.client.HTTPConnection("127.0.0.1", 9900, timeout=tts_timeout)
+            conn.request("POST", "/v1/tts",
+                         body=payload,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+
+            if resp.status != 200:
+                body = resp.read()
+                logging.error(f"[TTS] HTTP {resp.status}: {body[:200]}")
+                return
+
+            # 读取完整 WAV 数据
+            wav_data = resp.read()
+            gen_time = time.time() - t0
+
+            if not wav_data or len(wav_data) < 44:
+                logging.error(f"[TTS] 返回数据过短: {len(wav_data)} bytes")
+                return
+
+            # 写入临时文件
+            wav_path = f"/tmp/tts_{os.getpid()}_{int(time.time())}.wav"
+            with open(wav_path, "wb") as f:
+                f.write(wav_data)
+
+            wav_size = len(wav_data)
+            logging.info(f"[TTS] 生成完成: {wav_size} bytes, 耗时 {gen_time:.1f}s")
+
+            # 播放
+            aplay = subprocess.Popen(
+                ["aplay", "-q", "-D", "default", wav_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            _, stderr = aplay.communicate(timeout=est_duration * 3 + 30)
+
+            if aplay.returncode != 0 and stderr:
+                logging.warning(f"[Play] aplay 返回码 {aplay.returncode}: {stderr.decode()[:200]}")
+
+            elapsed = time.time() - t0
+            logging.info(f"[TTS] 播放完成: \"{text[:50]}\" ({elapsed:.1f}s total)")
+
+        except Exception as e:
+            logging.error(f"[TTS] 非流式异常: {e}", exc_info=True)
+            self._fail_count += 1
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            if wav_path:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
 
     def _speak_prebuffer(self, text):
         """流式预缓冲 TTS：先估算时长，预填 80% 缓冲，再启动 aplay 边生成边播放。
@@ -428,7 +509,7 @@ class TTSQueue:
             writer_thread.start()
 
             aplay = subprocess.Popen(
-                ["aplay", "-q", "-D", "plughw:1,0",
+                ["aplay", "-q", "-D", "default",
                  "-r", str(TTS_SAMPLE_RATE),
                  "-f", "S16_LE",
                  "-t", "raw",
@@ -771,7 +852,7 @@ def main():
     logging.info(f"[Monitor] 启动监控播报系统 v7 (流式预缓冲 80% TTS + 系统状态播报)")
     logging.info(f"[Monitor] 高频轮询: {FAST_POLL}s (模型+任务) | 低频轮询: {SLOW_POLL}s (硬件+告警)")
     logging.info(f"[Monitor] TTS: {TTS_URL}")
-    logging.info(f"[Monitor] speaker={TTS_SPEAKER} volume={TTS_VOLUME} language=chinese")
+    logging.info(f"[Monitor] speaker={TTS_SPEAKER} seed={TTS_SEED} language=chinese")
     logging.info(f"[Monitor] 队列最大: {TTS_QUEUE_MAX} 条，超出直接丢弃")
     logging.info(f"[Monitor] HTTP 超时: {HTTP_TIMEOUT}s")
     logging.info(f"[Monitor] 日志: {ROUTER_LOG}")

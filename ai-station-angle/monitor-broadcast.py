@@ -48,7 +48,7 @@ GPU_TEMP_LOG = LOG_DIR / "gpu-temp.log"
 STATE_FILE = Path("/home/zxw/.config/monitor-broadcast/state.json")
 MONITOR_LOG_DIR = LOG_DIR / "monitor"
 MONITOR_LOG_FILE = MONITOR_LOG_DIR / "monitor.log"
-TTS_URL = "http://127.0.0.1:9900/v1/tts"
+TTS_URL = "http://127.0.0.1:12348/v1/tts"
 TTS_SPEAKER = "vivian"    # 中文女声
 TTS_SEED = 42             # 固定种子，确保同一文本音色一致
 TTS_USE_STREAM = False    # False=非流式(默认,稳定), True=流式预缓冲
@@ -362,7 +362,7 @@ class TTSQueue:
         try:
             # 请求 TTS，超时设为估算时长的 5 倍 + 30s 兜底
             tts_timeout = max(int(est_duration * 5) + 30, HTTP_TIMEOUT)
-            conn = http.client.HTTPConnection("127.0.0.1", 9900, timeout=tts_timeout)
+            conn = http.client.HTTPConnection("127.0.0.1", 12348, timeout=tts_timeout)
             conn.request("POST", "/v1/tts",
                          body=payload,
                          headers={"Content-Type": "application/json"})
@@ -445,7 +445,7 @@ class TTSQueue:
         aplay = None
 
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", 9900, timeout=HTTP_TIMEOUT)
+            conn = http.client.HTTPConnection("127.0.0.1", 12348, timeout=HTTP_TIMEOUT)
             conn.request("POST", "/v1/tts/stream",
                          body=payload,
                          headers={"Content-Type": "application/json"})

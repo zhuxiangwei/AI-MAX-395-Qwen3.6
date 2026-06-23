@@ -660,18 +660,18 @@ curl https://{your_domain}/v1/chat/completions \
 
 #### Hermes Agent
 
-[Hermes](https://github.com/nicobailon/hermes-agent) v0.15.2 — 终端 AI agent，支持 TUI、oneshot 模式、多平台 Gateway、MCP、Skills 和 cron 调度。
+[Hermes](https://github.com/nicobailon/hermes-agent) v0.17.0 — 终端 AI agent，支持 TUI、oneshot 模式、多平台 Gateway、MCP、Skills 和 cron 调度。
 
 **安装路径：** WSL Ubuntu 26.04 上的 `~/.hermes/`
 
-**配置文件：** `~/.hermes/config.yaml` — 单机部署，278 为默认模型，358 为辅助模型。
+**配置文件：** `~/.hermes/config.yaml` — 单机部署，278 为默认模型，辅助任务均使用 278。
 
 | 配置项 | 值 |
 |---|---|
 | **model.default** | `278`（27B Dense） |
-| **providers.models** | `278`，`358` |
-| **supports_vision** | `true`（358 mmproj） |
-| **auxiliary tasks** | 全部 → `358`，视觉已启用 |
+| **providers.models** | `278` |
+| **supports_vision** | `false`（278 无视觉能力） |
+| **auxiliary tasks** | 全部 → `278`，辅助任务关闭 thinking |
 | **fallback_model** | `{provider: local-llm, model: '278'}` |
 
 **关键配置：**
@@ -692,7 +692,7 @@ HERMES_STREAM_STALE_TIMEOUT=7200  # override hardcoded 180s default
 ```
 
 **⚠️ 注意事项：**
-- `providers` 键必须为 `local-llm`（v0.15.2），不是 `custom:local-llm`（v0.15.1）。不匹配 → 超时回退到 120s
+- `providers` 键必须为 `local-llm`（v0.17.0），不是 `custom:local-llm`（v0.15.1）。不匹配 → 超时回退到 120s
 - `auxiliary.vision.base_url` 必须显式设置（空字符串 → 视觉任务 RuntimeError）
 - `fallback_model` 必须为字典 `{provider: ..., model: ...}`，不能为纯字符串
 - `yaml.dump` 可能丢弃纯字符串值（如 `fallback_model: '278'` → 空）；重写后需验证
@@ -733,28 +733,19 @@ hermes -z 'quick question'             # oneshot 模式
             "context": 262144,
             "output": 32768
           }
-        },
-        "Qwen3.6-35B-A3B-UD-Q8_K_XL": {
-          "name": "Qwen3.6-35B-A3B (358)",
-          "reasoning": true,
-          "attachment": true,
-          "limit": {
-            "context": 262144,
-            "output": 32768
-          }
         }
       }
     }
   },
   "model": "local-llm/Qwen3.6-27B-UD-Q8_K_XL",
-  "small_model": "local-llm/Qwen3.6-35B-A3B-UD-Q8_K_XL"
+  "small_model": "local-llm/Qwen3.6-27B-UD-Q8_K_XL"
 }
 ```
 
 **要点：**
 - 主模型（`model`）：278（27B Dense），启用 reasoning
-- 辅助模型（`small_model`）：358（35B MoE），启用 reasoning + attachment
-- 两个模型：context=262144，output=32768
+- 辅助模型（`small_model`）：278（与主模型相同，复用已加载模型，零延迟）
+- context=262144，output=32768
 - 超时：7200000ms（7200s），与 Hermes 和 llama-server 对齐
 
 #### QClaw
@@ -773,7 +764,7 @@ Qwen3-TTS 1.7B CustomVoice 模型纯 CPU 运行，为监控广播系统和语音
 |------|---------|
 | 模型 | Qwen3-TTS-12Hz-1.7B-CustomVoice |
 | 路径 | `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
-| 服务 | systemd 用户服务 `qwen-tts.service`（端口 9900，已启用） |
+| 服务 | systemd 用户服务 `qwen-tts.service`（端口 12348，已启用） |
 | 启动脚本 | `/home/zxw/scripts/qwen-tts.sh` |
 | 启动参数 | `-S`（流式模式） |
 | 性能 | RTF ~1.8-2.5（纯 CPU 8 线程），短文本 ~2.9s |
@@ -806,7 +797,7 @@ Qwen3-TTS 1.7B CustomVoice 模型纯 CPU 运行，为监控广播系统和语音
 **请求示例：**
 
 ```bash
-curl -s -X POST http://127.0.0.1:9900/v1/tts \
+curl -s -X POST http://127.0.0.1:12348/v1/tts \
   -H 'Content-Type: application/json' \
   -d '{"text":"监控播报系统已上线","speaker":"vivian","language":"chinese","seed":42}' \
   -o /tmp/tts_out.wav
@@ -833,7 +824,7 @@ Qwen3-ASR 1.7B 模型纯 CPU 运行，为语音助手管道提供语音转文字
 |------|---------|
 | 模型 | `Qwen3-ASR-1.7B-Q8_0.gguf`（2.1 GB） |
 | mmproj | `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf`（340 MB） |
-| 服务 | systemd 用户服务 `llama-asr.service`（端口 48091，已启用，运行中） |
+| 服务 | systemd 用户服务 `llama-asr.service`（端口 12347，已启用，运行中） |
 | 启动脚本 | `/home/zxw/scripts/llama-asr.sh` |
 | 推理 | 纯 CPU（`n-gpu-layers=0`），不占用 GPU |
 | 上下文 | `ctx-size=65536`（模型完整训练上下文） |
@@ -875,7 +866,7 @@ BINDIR="/home/zxw/llama.cpp/build/bin"
 SERVER="$BINDIR/llama-server"
 MODEL="/home/zxw/model/Qwen3-ASR-1.7B-Q8_0.gguf"
 MMPROJ="/home/zxw/mmproj/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-PORT=48091
+PORT=12347
 
 export LD_LIBRARY_PATH="$BINDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -901,6 +892,12 @@ exec "$SERVER" \
 
 **文件：**
 - `monitor-broadcast.py` — 监控广播系统脚本
+- `voice_assistant.py` — 语音助手主程序（Mic → VAD → ASR → LLM → TTS → 播放）
+- `mic_recorder.py` — 麦克风录音模块（ALSA + 能量 VAD）
+- `asr_module.py` — ASR 语音识别模块（port 12347）
+- `llm_module.py` — LLM 对话模块（port 12346，tool calling）
+- `tts_module.py` — TTS 语音合成模块（port 12348）
+- `tools.py` — 工具定义与执行（6 个工具：时间/系统信息/搜索/天气/网页/计算器）
 - `voice_assistant_monitor_requirements.md` — 需求文档
 
 **监控广播系统（v7，生产版）：**
@@ -938,11 +935,11 @@ exec "$SERVER" \
 - 播放：流式预缓冲模式 — 估算音频时长，预填 80% 缓冲区后启动 `aplay` 通过 FIFO 管道边生成边播放
 - 无非流式 fallback（生产版已移除）；流式失败则跳过本次播报
 
-**系统音量：** ALSA Master 100%，TTS 引擎音量 volume=80%。四级音量控制：TTS 引擎 → ALSA PCM 100% → ALSA Speaker 100% → ALSA Master 100%。
+**系统音量：** ALSA Master 95%，TTS 引擎不管理音量。
 
 **核心约束：** ASR 和 TTS 纯 CPU 运行；LLM 在 GPU 上运行。确保语音处理不会与 LLM 推理争抢 GPU 资源。
 
-**语音助手管道（规划中）：** ASR 输入 → LLM 调度 → TTS 语音输出。尚未实现。
+**语音助手管道（已实现）：** 麦克风 → VAD → ASR（port 12347）→ LLM（port 12346，35B-A3B 专用实例，tool calling）→ TTS（port 12348）→ 扬声器。完整链路代码完成，待联调测试。
 
 **监控广播管道（已上线）：** 独立线程监控硬件（GPU/CPU/RAM）+ 日志告警 → TTS 广播。
 
@@ -1137,7 +1134,7 @@ spec-draft-n-max = 3
 
 ### Hermes Providers 键不匹配导致 120s 超时回退
 
-**状态：** 已修复 — v0.15.2 使用 providers 键 `local-llm`（无 `custom:` 前缀）。
+**状态：** 已修复 — v0.17.0 使用 providers 键 `local-llm`（无 `custom:` 前缀）。
 
 **受影响场景：** Hermes 配置中 `model.provider = "custom:local-llm"`，但 `providers` 字典键为 `local-llm`（缺少 `custom:` 前缀）。
 

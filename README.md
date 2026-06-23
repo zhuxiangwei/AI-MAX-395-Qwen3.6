@@ -660,18 +660,18 @@ curl https://{your_domain}/v1/chat/completions \
 
 #### Hermes Agent
 
-[Hermes](https://github.com/nicobailon/hermes-agent) v0.15.2 — terminal AI agent with TUI, oneshot mode, multi-platform Gateway, MCP, Skills, and cron scheduling.
+[Hermes](https://github.com/nicobailon/hermes-agent) v0.17.0 — terminal AI agent with TUI, oneshot mode, multi-platform Gateway, MCP, Skills, and cron scheduling.
 
 **Install path:** `~/.hermes/` on WSL Ubuntu 26.04
 
-**Config file:** `~/.hermes/config.yaml` — single-machine deployment, 278 as default model with 358 as auxiliary.
+**Config file:** `~/.hermes/config.yaml` — single-machine deployment, 278 as default model, auxiliary tasks all use 278.
 
 | Config Key | Value |
 |---|---|
 | **model.default** | `278` (27B Dense) |
-| **providers.models** | `278`, `358` |
-| **supports_vision** | `true` (358 mmproj) |
-| **auxiliary tasks** | all → `358`, vision enabled |
+| **providers.models** | `278` |
+| **supports_vision** | `false` (278 has no vision capability) |
+| **auxiliary tasks** | all → `278`, auxiliary tasks disable thinking |
 | **fallback_model** | `{provider: local-llm, model: '278'}` |
 
 **Key config:**
@@ -692,7 +692,7 @@ HERMES_STREAM_STALE_TIMEOUT=7200  # override hardcoded 180s default
 ```
 
 **⚠️ Pitfalls:**
-- `providers` key must be `local-llm` (v0.15.2), not `custom:local-llm` (v0.15.1). Mismatch → timeout falls back to 120s
+- `providers` key must be `local-llm` (v0.17.0), not `custom:local-llm` (v0.15.1). Mismatch → timeout falls back to 120s
 - `auxiliary.vision.base_url` must be explicit (empty string → RuntimeError on vision tasks)
 - `fallback_model` must be dict `{provider: ..., model: ...}`, not bare string
 - `yaml.dump` may drop bare string values (e.g. `fallback_model: '278'` → empty); verify after rewrite
@@ -733,28 +733,19 @@ hermes -z 'quick question'             # oneshot mode
             "context": 262144,
             "output": 32768
           }
-        },
-        "Qwen3.6-35B-A3B-UD-Q8_K_XL": {
-          "name": "Qwen3.6-35B-A3B (358)",
-          "reasoning": true,
-          "attachment": true,
-          "limit": {
-            "context": 262144,
-            "output": 32768
-          }
         }
       }
     }
   },
   "model": "local-llm/Qwen3.6-27B-UD-Q8_K_XL",
-  "small_model": "local-llm/Qwen3.6-35B-A3B-UD-Q8_K_XL"
+  "small_model": "local-llm/Qwen3.6-27B-UD-Q8_K_XL"
 }
 ```
 
 **Key points:**
 - Primary model (`model`): 278 (27B Dense) with reasoning enabled
-- Auxiliary model (`small_model`): 358 (35B MoE) with reasoning + attachment support
-- Both models: context=262144, output=32768
+- Auxiliary model (`small_model`): 278 (same as primary, reuses loaded model, zero latency)
+- context=262144, output=32768
 - Timeout: 7200000ms (7200s), aligned with Hermes and llama-server
 
 #### QClaw
@@ -773,7 +764,7 @@ Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for th
 |------|---------|
 | Model | Qwen3-TTS-12Hz-1.7B-CustomVoice |
 | Path | `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
-| Service | systemd user service `qwen-tts.service` (port 9900, enabled) |
+| Service | systemd user service `qwen-tts.service` (port 12348, enabled) |
 | Startup script | `/home/zxw/scripts/qwen-tts.sh` |
 | Startup params | `-S` (streaming mode) |
 | Performance | RTF ~1.8-2.5 (pure CPU 8 threads), short text ~2.9s |
@@ -806,7 +797,7 @@ Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for th
 **Request example:**
 
 ```bash
-curl -s -X POST http://127.0.0.1:9900/v1/tts \
+curl -s -X POST http://127.0.0.1:12348/v1/tts \
   -H 'Content-Type: application/json' \
   -d '{"text":"Monitoring started","speaker":"vivian","language":"chinese","seed":42}' \
   -o /tmp/tts_out.wav
@@ -833,7 +824,7 @@ Qwen3-ASR 1.7B model runs on pure CPU for speech-to-text, providing voice input 
 |------|---------|
 | Model | `Qwen3-ASR-1.7B-Q8_0.gguf` (2.1 GB) |
 | mmproj | `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` (340 MB) |
-| Service | systemd user service `llama-asr.service` (port 48091, enabled, active) |
+| Service | systemd user service `llama-asr.service` (port 12347, enabled, active) |
 | Startup script | `/home/zxw/scripts/llama-asr.sh` |
 | Inference | Pure CPU (`n-gpu-layers=0`), does not occupy GPU |
 | Context | `ctx-size=65536` (full model training context) |
@@ -875,7 +866,7 @@ BINDIR="/home/zxw/llama.cpp/build/bin"
 SERVER="$BINDIR/llama-server"
 MODEL="/home/zxw/model/Qwen3-ASR-1.7B-Q8_0.gguf"
 MMPROJ="/home/zxw/mmproj/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
-PORT=48091
+PORT=12347
 
 export LD_LIBRARY_PATH="$BINDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -901,6 +892,12 @@ Application suite located in the repository at `ai-station-angle/`, providing mo
 
 **Files:**
 - `monitor-broadcast.py` — Monitoring broadcast system script
+- `voice_assistant.py` — Voice assistant main program (Mic → VAD → ASR → LLM → TTS → Speaker)
+- `mic_recorder.py` — Microphone recording module (ALSA + energy VAD)
+- `asr_module.py` — ASR speech recognition module (port 12347)
+- `llm_module.py` — LLM dialogue module (port 12346, tool calling)
+- `tts_module.py` — TTS speech synthesis module (port 12348)
+- `tools.py` — Tool definitions and execution (6 tools: time/system info/search/weather/web/calculator)
 - `voice_assistant_monitor_requirements.md` — Requirements document
 
 **Monitoring Broadcast System (v7, production):**
@@ -938,11 +935,11 @@ Automated monitoring and TTS broadcast service that monitors LLM inference statu
 - Playback: streaming pre-buffer mode — estimates audio duration, pre-fills 80% buffer, then starts `aplay` via FIFO pipe while TTS continues streaming
 - No fallback to non-streaming TTS (removed in production); if streaming fails, the broadcast is skipped
 
-**System volume:** ALSA Master 100%, TTS engine volume=80%. Four-level volume control: TTS engine → ALSA PCM 100% → ALSA Speaker 100% → ALSA Master 100%.
+**System volume:** ALSA Master 95%, TTS engine does not manage volume.
 
 **Core constraint:** ASR and TTS run on pure CPU; LLM runs on GPU. This ensures voice processing never competes with LLM inference for GPU resources.
 
-**Voice assistant pipeline (planned):** ASR input → LLM dispatch → TTS voice output. Not yet implemented.
+**Voice assistant pipeline (implemented):** Microphone → VAD → ASR (port 12347) → LLM (port 12346, 35B-A3B dedicated instance with tool calling) → TTS (port 12348) → Speaker. Full pipeline code complete, pending integration testing.
 
 **Monitoring broadcast pipeline (active):** Independent thread monitors hardware (GPU/CPU/RAM) + log alerts → TTS broadcast.
 
@@ -1137,7 +1134,7 @@ spec-draft-n-max = 3
 
 ### Hermes Providers Key Mismatch Causes 120s Timeout Fallback
 
-**Status:** Fixed — v0.15.2 uses providers key `local-llm` (no `custom:` prefix).
+**Status:** Fixed — v0.17.0 uses providers key `local-llm` (no `custom:` prefix).
 
 **Affected scenario:** Hermes config where `model.provider = "custom:local-llm"` but `providers` dict key was `local-llm` (missing `custom:` prefix).
 

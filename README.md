@@ -14,7 +14,7 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 
 ### 35B-A3B MoE (UD-Q8_K_XL, alias `358`)
 
-**Auxiliary model — Hermes auxiliary tasks (vision, compression, etc.).** MoE activates only 3B/35B params per token. ~50 t/s generation with vision support.
+**Voice assistant model.** MoE activates only 3B/35B params per token. ~50 t/s generation. Currently no mmproj configured (vision disabled).
 
 **Optimal config: F16 KV cache, UB=256.** UB=256 is the current production config (stable across all context lengths). Previously UB=512 was optimal for ≤128K (+22~25% prefill, -17~20% TTFT), but UB=256 is now unified for all models.
 
@@ -23,6 +23,8 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 #### F16 KV UB=256 (production config, b9692)
 
 **Generation speed by context length** (1468 tasks, cache-ram=65536):
+
+> ⚠️ The following benchmark data is historical, collected when 358 used cache-ram=65536 and a different configuration. 358 is now configured as voice assistant with cache-ram=4096.
 
 | Context | Tasks | P50 (t/s) | Mean (t/s) |
 |---------|-------|-----------|------------|
@@ -33,6 +35,8 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 | 130–200K | 4 | 37.8 | 37.9 |
 
 **Prefill speed by prompt length** (1083 tasks, tokens ≥ 100, cache-ram=65536):
+
+> ⚠️ Same as above, historical data.
 
 | Prompt | Tasks | P50 (t/s) | Mean (t/s) |
 |--------|-------|-----------|------------|
@@ -93,7 +97,7 @@ Dense model — all 27B params active per token. Current Hermes default model.
 | 60K–130K | 13 | 78.8 | 63.9 |
 | 130K+ | 4 | 39.9 | 39.3 |
 
-> † Production workload log data (F16 KV, UB=256, cache-ram=49152, llama.cpp b9692, 1001 gen + 1033 prefill tasks). Gen speed includes thinking tokens. Short/medium context: gen stable at 11–13 t/s; long context (5K+ decoded): 8–10 t/s. Prefill varies widely with cache-hit rate; short contexts (<5K) show low P50 due to incremental cache-hit prefills. True cold prefill at 16K+: 150–226 t/s (median ~200 t/s). At 130K+: ~45 t/s. MTP acceptance: mean 87.1%, median 89.2%.
+> † Production workload log data (F16 KV, UB=256, cache-ram=32768, llama.cpp b9692, 1001 gen + 1033 prefill tasks). Gen speed includes thinking tokens. Short/medium context: gen stable at 11–13 t/s; long context (5K+ decoded): 8–10 t/s. Prefill varies widely with cache-hit rate; short contexts (<5K) show low P50 due to incremental cache-hit prefills. True cold prefill at 16K+: 150–226 t/s (median ~200 t/s). At 130K+: ~45 t/s. MTP acceptance: mean 87.1%, median 89.2%.
 >
 > **Historical reference (b9625, 378 gen + 413 prefill tasks):** Gen avg by response: <200=11.7, 200–500=12.0, 500–1K=10.8, 1K–3K=10.2, 3K–5K=10.1, 5K+=9.2. Prefill avg by prompt: <1K=50, 1K–5K=71, 5K–10K=79, 10K–30K=132, 30K–60K=62, 60K–130K=91, 130K+=46. Gen speed consistent across b9625→b9692; prefill shows similar patterns with larger sample.
 >
@@ -117,6 +121,8 @@ Dense model — all 27B params active per token. Current Hermes default model.
 
 8 questions covering math, logic, CS, and philosophy. Scored by keyword matching (max 10 per question, total 80). Model uses F16 KV + UB=512 + MTP (`--spec-type draft-mtp --spec-draft-n-max 2`).
 
+> ⚠️ Intelligence test was conducted when 358 still used n=2. Both 278 and 358 now use n=3. 278 MTP acceptance ~87%, 358 ~40% (MoE architecture has lower acceptance).
+
 | Question | 358 (Q8) |
 |----------|----------|
 | Gaussian sum (1+2+...+100) | 10/10 |
@@ -131,6 +137,8 @@ Dense model — all 27B params active per token. Current Hermes default model.
 | Avg Gen speed | 57.3 t/s |
 
 ### Vision Test (35B MoE + mmproj, MTP enabled)
+
+> ⚠️ **Historical data.** Vision test was conducted using 358 + mmproj. 358 is now configured as voice assistant only, without mmproj. 278 is configured with mmproj (Qwen3.6-27B-F16).
 
 Model uses `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as base64 via OpenAI chat completions API. F16 KV + UB=512 + MTP.
 
@@ -158,8 +166,8 @@ Model uses `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as ba
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
 | All models: `parallel = 1` | Single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
 | Service: `--models-max 2` | Dual-model mode: 278 and 358 loaded simultaneously. Router auto-switches via LRU. Previously `models-max 1` (single-model) to save GTT; switched back to dual-model with reduced cache-ram (32768/4096) |
-| 27B Dense: `parallel = 1` only | `parallel ≥ 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
-| `spec-draft-n-max = 3` (both models) | Upgraded from 2 to 3 for better speculative decoding. 3 is 20.6% slower than 2 with Q8_0 KV, but with F16 KV cache the tradeoff favors accuracy at n=3 |
+| 27B Dense: `parallel = 1` only | Single-user workload never needs concurrent slots (see Known Issues) |
+| `spec-draft-n-max = 3` (both models) | Both 278 and 358 use n=3. 278 MTP acceptance ~87%, 358 ~40% (MoE architecture has lower acceptance) |
 | `-t 8` (278) / `-t 4` (358) | 278: no difference vs `-t 16` with full GPU offload; t=8 runs cooler. 358: fewer threads to leave CPU headroom for 278 |
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
@@ -177,12 +185,12 @@ Model uses `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as ba
 |-----------|-------|--------|
 | All models: concurrent slots | 1 (`parallel = 1`) | Single-user workload; `parallel > 1` wastes KV cache memory |
 | All models: max context | 256K (278: `ctx-size = 262144`), 32K (358: `ctx-size = 32768`) | 278: unified context covers all prompt lengths. 358: 32K sufficient for voice assistant conversations |
-| 27B Dense: `parallel` | 1 only | `parallel ≥ 3` triggers Vulkan bug (see Known Issues) |
+| 27B Dense: `parallel` | 1 only | Single-user workload never needs concurrency (see Known Issues) |
 | 35B MoE: UB constraints | UB=256 (current, stable across all context lengths) | Both 278 and 358 unified to UB=256 for stability; UB≥1024 degrades at ≥128K; UB≥2048 Vulkan crash |
 | 27B Dense: UB constraints | F16 KV UB=256 (current, 278) | UB=512 previously caused instability; unified to UB=256; UB≥2048 Vulkan crash |
 | Thinking mode | 278: enabled (`reasoning-budget=16384`), 358: disabled (`reasoning-budget=0`) | 278: budget cap prevents runaway thinking. 358: no reasoning for fast voice responses. Clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
-| `cache-ram` | 278=`32768`, 358=`4096` (per-model in INI) | Prompt cache sized per model role: 278 (primary, 32 GB) in dual-model mode; 358 (auxiliary, 4 GB). Previously `49152/65536` in single-model mode; `--cache-ram -1` caused unbounded growth (see Known Issues) |
+| `cache-ram` | 278=`32768`, 358=`4096` (per-model in INI) | Prompt cache sized per model role: 278 (primary, 32 GB) in dual-model mode; 358 (auxiliary, 4 GB). Previously `49152/65536` in single-model mode |
 | `kv-unified` | 1 (all models, set in INI) | Unified KV cache; required for Vulkan slot-save/restore; bypasses GGML_ASSERT crash on unified memory |
 | `sleep-idle-seconds` | 278=`1800`, 358=`600` (per-model in INI) | Auto-unload idle models to free GTT. Safe in dual-model mode — only one model unloads at a time |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
@@ -191,7 +199,7 @@ Model uses `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as ba
 
 | Scope | Where | Examples |
 |-------|-------|---------|
-| **Server-level** | `llm-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout` |
+| **Server-level** | `llama-router.service` ExecStart | `--host`, `--port`, `--api-key`, `--models-dir`, `--models-max`, `--models-preset`, `--timeout` |
 | **Model-level** | `router-preset.ini` per-model section | `n-gpu-layers`, `ctx-size`, `ubatch-size`, `threads`, `alias`, `spec-type`, `mlock`, `numa`, ... |
 
 > Model parameters are defined **only** in the INI — never duplicated in the service file.
@@ -276,7 +284,7 @@ GRUB_CMDLINE_LINUX_DEFAULT="amd_iommu=off amdgpu.gttsize=122880 processor.max_cs
 | llama.cpp | b9692 (commit 35b1d5791, Vulkan backend) |
 | Build options | `-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release` |
 
-> ⚠️ **Version upgraded from b9315 → b9592 (2026-06-11) → b9617 (2026-06-13) → b9625 (2026-06-14) → b9692 (2026-06-18).** Notable changes: Vulkan contiguous buffer fast path (#23973), Vulkan memcpy pipeline barriers (#23770), server checkpoint pos_next fix (#24411), reasoning-budget WebUI precedence fix (#24517), router mode log cleanup (#24463), Vulkan non-contig unary/glu ops fix (#24215), Jinja template bug fixes (#24574, #24580), server UI static asset refactor (#24550), Vulkan host-visible memory buffers on UMA. Commit `6c4cbdc70` ("server: MTP layer kv-cache should respect draft type ctk") is still present, but the current deployment uses default F16 KV cache (no explicit `cache-type-k`/`cache-type-v` in INI), so this bug **does not trigger**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) is re-enabled. Do not enable quantized KV on the Vulkan backend until upstream fixes this.
+> Current version b9692 (commit 35b1d5791, 2026-06-18). Commit `6c4cbdc70` ("server: MTP layer kv-cache should respect draft type ctk") is still present, but the current deployment uses default F16 KV cache (no explicit `cache-type-k`/`cache-type-v` in INI), so this bug **does not trigger**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) is re-enabled. Do not enable quantized KV on the Vulkan backend until upstream fixes this.
 
 | Vulkan runtime | 1.4.341 |
 | API protocol | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) |
@@ -410,7 +418,7 @@ PubkeyAuthentication yes
 
 ### 3. SSH Reverse Tunnel (systemd)
 
-**File:** `~/.config/systemd/user/llm-tunnel.service`
+**File:** `~/.config/systemd/user/llama-tunnel.service`
 
 ```ini
 [Unit]
@@ -440,8 +448,8 @@ WantedBy=default.target
 ```bash
 mkdir -p ~/.config/systemd/user
 systemctl --user daemon-reload
-systemctl --user enable llm-tunnel
-systemctl --user start llm-tunnel
+systemctl --user enable llama-tunnel
+systemctl --user start llama-tunnel
 loginctl enable-linger
 ```
 
@@ -595,11 +603,11 @@ alias = 358
 timeout = 600
 ```
 
-**To change model parameters:** edit the INI file → restart llama-server (via `systemctl --user restart llm-router` or manual restart)
+**To change model parameters:** edit the INI file → restart llama-server (via `systemctl --user restart llama-router` or manual restart)
 
 ### 7. Inference Service (systemd)
 
-**File:** `~/.config/systemd/user/llm-router.service` (user-level, no sudo needed)
+**File:** `~/.config/systemd/user/llama-router.service` (user-level, no sudo needed)
 
 ```ini
 [Unit]
@@ -609,7 +617,6 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/home/$USER/scripts/llama-router.sh
-ExecStartPost=-/bin/bash -c 'nohup /home/$USER/scripts/slot-checkpoint.sh restore >> /home/$USER/logs/llama/checkpoint.log 2>&1 &'
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=300
@@ -628,7 +635,7 @@ systemctl --user start llama-router
 loginctl enable-linger   # survive logout
 ```
 
-> The service uses a wrapper script (`llama-router.sh`) that handles SIGTERM cleanup and logs output. The wrapper runs `llama-server` with `--models-max 2` (dual-model mode, 278 + 358 loaded simultaneously) and `--models-preset` (per-model params from INI). Model parameters (cache-ram, ubatch, etc.) are defined in the preset INI, not in the service file. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights. `TimeoutStartSec=300` prevents systemd from killing the service during long model loads.
+> The service uses a wrapper script (`llama-router.sh`) that handles SIGTERM cleanup and logs output. The wrapper runs `llama-server` with `--models-max 2` (dual-model mode, 278 + 358 loaded simultaneously) and `--models-preset` (per-model params from INI). Model parameters (cache-ram, ubatch, etc.) are defined in the preset INI, not in the service file. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights. `TimeoutStartSec=300` prevents systemd from killing the service during long model loads. No slot-checkpoint.
 
 ### 8. Model Switching
 
@@ -758,10 +765,10 @@ Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for th
 | Item | Details |
 |------|---------|
 | Model | Qwen3-TTS-12Hz-1.7B-CustomVoice |
-| Path | `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
-| Service | systemd user service `qwen-tts.service` (port 12348, enabled) |
-| Startup script | `/home/zxw/scripts/qwen-tts.sh` |
-| Startup params | `-S` (streaming mode) |
+| Path | `/home/zxw/model-tts/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
+| Service | systemd user service `qwen3-tts.service` (port 12348, enabled) |
+| Startup script | `/home/zxw/scripts/qwen3-tts.sh` |
+| Startup params | `-S` (non-streaming mode) |
 | Performance | RTF ~1.8-2.5 (pure CPU 8 threads), short text ~2.9s |
 | Memory | ~3.2 GB |
 
@@ -779,14 +786,13 @@ Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for th
 | sohee | Korean | Female |
 | jessica | English | Female |
 
-> ⚠️ Previously using Base model with empty `spk_id`, speaker parameter was ignored and all output was default male voice. CustomVoice model includes preset speaker mappings. Base model retained at `/home/zxw/model/Qwen3-TTS-12Hz-1.7B-Base/` but no longer loaded.
+> ⚠️ Previously using Base model with empty `spk_id`, speaker parameter was ignored and all output was default male voice. CustomVoice model includes preset speaker mappings. Base model retained at `/home/zxw/model-tts/Qwen3-TTS-12Hz-1.7B-Base/` but no longer loaded.
 
 **API endpoints:**
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/tts` | POST | Non-streaming synthesis, returns complete WAV |
-| `/v1/tts/stream` | POST | Streaming synthesis, returns chunks as generated |
 | `/v1/audio/speech` | POST | OpenAI-compatible interface |
 
 **Request example:**
@@ -803,13 +809,13 @@ curl -s -X POST http://127.0.0.1:12348/v1/tts \
 The inference box has a built-in speaker (card1 ALC245 Analog), played via ALSA:
 
 ```bash
-# Play (non-blocking, detached from SSH session)
-systemd-run --user --no-block aplay -q -D plughw:1,0 /tmp/tts_out.wav
+# Play via dmix (shared, non-blocking)
+aplay -q -D default /tmp/tts_out.wav
 ```
 
-**ALSA config:** `/etc/asound.conf` sets `defaults.pcm.card=1`, `defaults.ctl.card=1`.
+**ALSA config:** `/etc/asound.conf` configures dmix (playback sharing) and dsnoop (capture sharing), allowing multiple processes to access audio devices simultaneously.
 
-> ⚠️ Do not use `< /dev/null` redirection when playing audio over SSH (hangs the session). Use `systemd-run --user --no-block` to fully detach.
+> ⚠️ Do not use `< /dev/null` redirection when playing audio over SSH (hangs the session). Use `aplay -q -D default` via dmix sharing.
 
 #### Qwen3-ASR Speech Recognition Service
 
@@ -819,8 +825,8 @@ Qwen3-ASR 1.7B model runs on pure CPU for speech-to-text, providing voice input 
 |------|---------|
 | Model | `Qwen3-ASR-1.7B-Q8_0.gguf` (2.1 GB) |
 | mmproj | `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` (340 MB) |
-| Service | systemd user service `llama-asr.service` (port 12347, enabled, active) |
-| Startup script | `/home/zxw/scripts/llama-asr.sh` |
+| Service | systemd user service `qwen3-asr.service` (port 12347, enabled, active) |
+| Startup script | `/home/zxw/scripts/qwen3-asr.sh` |
 | Inference | Pure CPU (`n-gpu-layers=0`), does not occupy GPU |
 | Context | `ctx-size=65536` (full model training context) |
 | Threads | 8 |
@@ -828,7 +834,7 @@ Qwen3-ASR 1.7B model runs on pure CPU for speech-to-text, providing voice input 
 | Performance | prompt eval 199.95 t/s, eval 36.29 t/s |
 | API | OpenAI-compatible (llama-server) |
 
-**Service file:** `~/.config/systemd/user/llama-asr.service`
+**Service file:** `~/.config/systemd/user/qwen3-asr.service`
 
 ```ini
 [Unit]
@@ -837,7 +843,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/zxw/scripts/llama-asr.sh
+ExecStart=/home/zxw/scripts/qwen3-asr.sh
 LimitMEMLOCK=infinity
 Restart=on-failure
 RestartSec=10
@@ -849,7 +855,7 @@ KillMode=process
 WantedBy=default.target
 ```
 
-**Startup script:** `/home/zxw/scripts/llama-asr.sh`
+**Startup script:** `/home/zxw/scripts/qwen3-asr.sh`
 
 ```bash
 #!/bin/bash
@@ -859,7 +865,7 @@ WantedBy=default.target
 LOGDIR="/home/zxw/logs/llama"
 BINDIR="/home/zxw/llama.cpp/build/bin"
 SERVER="$BINDIR/llama-server"
-MODEL="/home/zxw/model/Qwen3-ASR-1.7B-Q8_0.gguf"
+MODEL="/home/zxw/model-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
 MMPROJ="/home/zxw/mmproj/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
 PORT=12347
 
@@ -875,6 +881,9 @@ exec "$SERVER" \
   --ctx-size 65536 \
   --n-gpu-layers 0 \
   --threads 8 \
+  --parallel 1 \
+  --no-cache-idle-slots \
+  --cache-ram 0 \
   --timeout 600 \
   >> "$LOGDIR/asr.log" 2>&1
 ```
@@ -931,7 +940,7 @@ Automated monitoring and TTS broadcast service that monitors LLM inference statu
 - Playback: non-streaming WAV mode (default, stable) — full WAV generated before `aplay` plays
 - Streaming pre-buffer mode available via `TTS_USE_STREAM = True` toggle
 
-**System volume:** ALSA Master 95%, TTS engine does not manage volume.
+**System volume:** ALSA Master 100%, TTS engine does not manage volume.
 
 **Core constraint:** ASR and TTS run on pure CPU; LLM runs on GPU. This ensures voice processing never competes with LLM inference for GPU resources.
 
@@ -947,15 +956,18 @@ Automated monitoring and TTS broadcast service that monitors LLM inference statu
 - [ ] Cloud SSL certificates configured
 - [ ] Cloud `sshd_config` allows TCP forwarding and keepalive
 - [ ] Inference box has SSH key for passwordless login to cloud
-- [ ] `llm-tunnel.service` created and **active**
+- [ ] `llama-tunnel.service` created and **active**
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
-- [ ] `llm-router.service` created and **active** (server-level params only, `--models-max 2`)
+- [ ] `llama-router.service` created and **active** (server-level params only, `--models-max 2`)
 - [ ] `~/model/router-preset.ini` configured with per-model params + aliases (278/358)
 - [ ] Dual-model mode: both 278 and 358 loaded; router auto-switches via LRU
 - [ ] Per-model `sleep-idle-seconds` configured (278=1800, 358=600)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
 - [ ] Hardware temperature monitoring: `systemctl --user status hw-temp.service` active
 - [ ] HW temp log: `cat ~/logs/hw-temp.log` shows entries every 60 seconds
+- [ ] ASR service: `systemctl --user status qwen3-asr.service` active
+- [ ] TTS service: `systemctl --user status qwen3-tts.service` active
+- [ ] Voice assistant service: relevant services active
 - [ ] Alias routing: `curl -d '{"model":"358",...}'`、`curl -d '{"model":"278",...}'` both work
 
 **Quick smoke test:**
@@ -993,117 +1005,11 @@ curl https://{your_domain}/v1/chat/completions \
 
 ---
 
-### Vulkan + parallel=3 + MTP Crash on 27B Dense Models
+### MTP + Quantized KV Cache Causes Vulkan DeviceLost
 
-**Status:** Open — waiting for upstream fix (PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453))
+**Status:** Open — workaround with F16 KV; upstream unfixed
 
-**Affected models:** 27B Dense series (alias `278`). 35B MoE models (alias `358`) are **not** affected.
-
-**Symptom:** `llama-server` aborts with `GGML_ASSERT` failure when processing any request on 27B Dense models with `parallel ≥ 3` and MTP enabled.
-
-**Reproduction:**
-```ini
-# router-preset.ini — triggers the crash
-[Qwen3.6-27B-UD-Q8_K_XL]
-parallel = 3
-spec-type = draft-mtp
-spec-draft-n-max = 3
-ctx-size = 786432
-# ... other params
-```
-
-**Crash output:**
-```
-/home/$USER/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
-```
-
-**Root cause:** Vulkan backend uses device-only (unified) memory buffers. Per-slot KV cache tensors have `tensor->data == NULL` on the host side (data lives on GPU). `ggml_backend_tensor_get()` and related functions unconditionally assert `tensor->data != NULL`, which fails when the prompt cache system attempts to save/restore slot state (including MTP draft context). The crash occurs in two paths:
-
-1. **Direct path:** `ggml_backend_tensor_get()` — `ggml-backend.cpp:348`
-2. **MTP draft path:** `common_prompt_checkpoint::update_dft()` → `llama_context::state_seq_get_data()` → `llama_io_write_host` — `common.cpp:2082`
-
-**Affected code** (`ggml/src/ggml-backend.cpp`, 11 occurrences):
-```cpp
-// Line 348 — one of 11 identical assertions that fail on Vulkan unified memory
-GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
-```
-
-**Workaround attempted:** `kv-unified = 1` (currently enabled) bypasses crash path #1 but **not** crash path #2 (MTP draft checkpoint). Not viable for `parallel ≥ 3`.
-
-**Current mitigation:** All 27B Dense models set to `parallel = 1` (single-user scenario, no concurrency needed). This avoids the crash at the cost of no concurrent slots.
-
-**Upstream tracking:**
-- Issue [#19839](https://github.com/ggml-org/llama.cpp/issues/19839) — original bug report
-- PR [#22453](https://github.com/ggml-org/llama.cpp/pull/22453) — proposed fix (add NULL check before assert, delegate to backend `get_tensor`); closed but not merged
-- As of b9315 (commit `314e72934`), all 11 assert locations remain unchanged in `ggml-backend.cpp`
-
----
-
-### OOM Kill with Dual-Model + `--sleep-idle-seconds`
-
-**Status:** Mitigated — per-model `sleep-idle-seconds` in INI (278=1800, 358=600); dual-model mode (`models-max 2`) with conservative `cache-ram` (32768/4096)
-
-**Historical scenario:** Dual-model resident mode (`models-max 2`) with `--sleep-idle-seconds`. Idle-unload/reload cycle caused memory spike exceeding 128 GB RAM → OOM Kill. Previously resolved by switching to single-model mode without `--sleep-idle-seconds`.
-
-**Current approach:** Back to dual-model mode with per-model `sleep-idle-seconds` and reduced `cache-ram`. The reduced cache-ram (32768 for 278, 4096 for 358) leaves sufficient GTT headroom for idle-unload/reload cycles. Only one model unloads at a time, so memory spikes are bounded.
-
-### `reasoning=off` Causes Catastrophic Checkpoint Restore Slowdown
-
-**Status:** Fixed — removed `reasoning = off` and `reasoning-budget = 0` from model presets, replaced with `reasoning-budget = 8192`
-
-**Root cause:** `reasoning = off` creates an attention mask mismatch between the checkpoint and runtime configuration. When restoring a prompt cache checkpoint, llama-server detects the mismatch and falls back to slow re-prefilling.
-
-**Warning:** Do **not** re-add `reasoning = off` to any model preset. Always keep reasoning enabled at the server level and control it per-request via `chat_template_kwargs: { enable_thinking: false }`.
-
----
-
-### MTP + Quantized KV Cache Causes Vulkan DeviceLost (b9318+)
-
-**Status:** Open — version locked at b9315; awaiting upstream fix
-
-**Affected models:** All models with MTP speculative decoding + quantized KV cache (`cache-type-k` / `cache-type-v`). Current deployment uses default F16 KV (no explicit `cache-type-k`/`cache-type-v` in INI), so this issue is **not currently triggered**. It would only manifest if quantized KV (e.g. `q8_0`, `q4_0`) were re-enabled on any model.
-
-**Symptom:** `vk::DeviceLostError` (`vk::Queue::submit: ErrorDeviceLost`) during MTP draft decode, causing llama-server slot process crash. Client sees HTTP 500 / "Failed to read connection".
-
-**Reproduction:**
-```ini
-# router-preset.ini — triggers the crash on b9318+
-[Qwen3.6-27B-UD-Q4_K_XL]
-parallel = 1
-ctx-size = 262144
-cache-type-k = q8_0       # quantized KV
-spec-type = draft-mtp      # MTP enabled
-spec-draft-n-max = 3
-# ...
-```
-
-**Culprit commit:** `6c4cbdc70` — "server: MTP layer kv-cache should respect draft type ctk" (#23646). Adds 4 lines in `tools/server/server-context.cpp` that set `type_k` and `type_v` for MTP context. When MTP context uses quantized KV formats (e.g., `q8_0`), the Vulkan backend triggers `vk::DeviceLostError` at long context lengths.
-
-**Bisection:** b9297 GOOD → b9315 GOOD → b9318 BAD. 6 rounds.
-
-**Stress test results (b9465, 278 model):**
-
-| Config | p32K | p64K | p128K | p256K |
-|--------|------|------|-------|-------|
-| MTP + Q8_0 KV | ✅ | ❌ DeviceLost | ❌ DeviceLost | — |
-| No MTP | — | ✅ | ✅ | ✅ |
-| b9315 + MTP | ✅ | ✅ | ✅ | ✅ (128K tokens verified) |
-
-**Root cause:** MTP draft KV cache with quantized types triggers a Vulkan driver bug in radv/amdgpu. Long-context scenarios (≥64K tokens) with high-frequency GPU submissions cause device context loss. The bug is in the interaction between quantized MTP KV cache and the Vulkan memory management — not in the commit's logic itself, but the commit exposes the latent bug.
-
-**Workaround:** Upgraded to b9692 (F16 KV does not trigger this bug). Do **not** enable quantized KV types until upstream addresses the Vulkan + quantized KV cache interaction.
-
-**Upstream tracking:** No issue filed yet. The regression is specific to Vulkan backend + MTP + quantized KV; other backends (CPU/CUDA/Metal) are unaffected.
-
----
-
-### `--cache-ram -1` Causes VRAM Contention and 35B Cold-Load Stall
-
-**Status:** Mitigated — prompt cache now per-model in INI (278 `cache-ram = 32768`, 358 `cache-ram = 4096`). Dual-model mode (`models-max 2`) with conservative limits prevents unbounded growth.
-
-**Symptom:** `--cache-ram -1` allows prompt cache to grow without bound. In single-model mode, 278's cache consumed ~12+ GB, leaving insufficient headroom for 358 cold load (stalled 20+ minutes).
-
-**Fix:** Per-model `cache-ram` limits in INI + dual-model mode with conservative values. **Do not** use `--cache-ram -1` in any mode.
+Vulkan + quantized KV + MTP triggers `vk::DeviceLostError` at long context (≥64K), causing llama-server slot process crash. Current deployment uses default F16 KV cache (no explicit `cache-type-k`/`cache-type-v` in INI), so this issue is **not currently triggered**. Do not enable quantized KV on the Vulkan backend until upstream fixes this.
 
 ---
 

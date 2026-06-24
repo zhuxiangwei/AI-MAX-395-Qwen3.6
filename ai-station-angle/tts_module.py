@@ -2,8 +2,8 @@
 """
 语音助手 - TTS 语音合成模块
 
-调用本地 Qwen3-TTS-12Hz-1.7B-CustomVoice 服务。
-端点: POST http://127.0.0.1:9900/v1/tts
+调用本地 Qwen3-TTS-12Hz-0.6B-CustomVoice 服务。
+端点: POST http://127.0.0.1:12348/v1/tts
 返回: WAV 音频数据 (S16_LE/24000Hz/1ch)
 """
 

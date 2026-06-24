@@ -764,13 +764,13 @@ Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for th
 
 | Item | Details |
 |------|---------|
-| Model | Qwen3-TTS-12Hz-1.7B-CustomVoice |
-| Path | `/home/zxw/model-tts/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
+| Model | Qwen3-TTS-12Hz-0.6B-CustomVoice |
+| Path | `/home/zxw/model-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice/` |
 | Service | systemd user service `qwen3-tts.service` (port 12348, enabled) |
 | Startup script | `/home/zxw/scripts/qwen3-tts.sh` |
-| Startup params | `-S` (non-streaming mode) |
-| Performance | RTF ~1.8-2.5 (pure CPU 8 threads), short text ~2.9s |
-| Memory | ~3.2 GB |
+| Startup params | `-S` (non-streaming mode) + `-j 8` (8 threads) |
+| Performance | RTF ~1.3-2.7 (pure CPU 8 threads, ~40% faster than 1.7B) |
+| Memory | ~668 MB |
 
 **Preset speakers:**
 
@@ -786,7 +786,7 @@ Qwen3-TTS 1.7B CustomVoice model runs on pure CPU, providing voice output for th
 | sohee | Korean | Female |
 | jessica | English | Female |
 
-> ⚠️ Previously using Base model with empty `spk_id`, speaker parameter was ignored and all output was default male voice. CustomVoice model includes preset speaker mappings. Base model retained at `/home/zxw/model-tts/Qwen3-TTS-12Hz-1.7B-Base/` but no longer loaded.
+> ⚠️ Previously using Base model with empty `spk_id`, speaker parameter was ignored and all output was default male voice. CustomVoice model includes preset speaker mappings. Switched from 1.7B to 0.6B on 2026-06-25 (saves ~2.8GB memory, ~40% faster). Base model retained at `/home/zxw/model-tts/Qwen3-TTS-12Hz-1.7B-Base/` but no longer loaded.
 
 **API endpoints:**
 
@@ -895,18 +895,16 @@ exec "$SERVER" \
 Application suite located in the repository at `ai-station-angle/`, providing monitoring broadcast and voice assistant capabilities for the inference station.
 
 **Files:**
-- `monitor-broadcast.py` — Monitoring broadcast system script
-- `voice_assistant.py` — Voice assistant main program (Mic → VAD → ASR → LLM → TTS → Speaker)
+- `monitor-broadcast.py` — Monitoring broadcast system script (v8)
+- `voice_assistant.py` — Voice assistant main program (Mic → VAD → ASR → Wake word → LLM → TTS → Speaker)
 - `mic_recorder.py` — Microphone recording module (ALSA + energy VAD)
 - `asr_module.py` — ASR speech recognition module (port 12347)
 - `llm_module.py` — LLM dialogue module (Router port 12345, alias 358 with prewarm, tool calling)
-- `tts_module.py` — TTS speech synthesis module (port 12348)
+- `tts_module.py` — TTS speech synthesis module (port 12348, 0.6B CustomVoice)
 - `tools.py` — Tool definitions and execution (6 tools: time/system info/search/weather/web/calculator)
-- `voice_assistant_monitor_requirements.md` — Requirements document
+- `voice_assistant_monitor_requirements.md` — Requirements document (v3)
 
 **Monitoring Broadcast System (v8, production):**
-
-Automated monitoring and TTS broadcast service that monitors LLM inference status and hardware health in real-time. Reads `hw-temp.log` for comprehensive hardware monitoring (GPU, CPU, NVMe, NIC, WiFi temperatures).
 
 | Item | Details |
 |------|---------|
@@ -940,11 +938,11 @@ Automated monitoring and TTS broadcast service that monitors LLM inference statu
 - Playback: non-streaming WAV mode (default, stable) — full WAV generated before `aplay` plays
 - Streaming pre-buffer mode available via `TTS_USE_STREAM = True` toggle
 
-**System volume:** ALSA Master 100%, TTS engine does not manage volume.
+**System volume:** ALSA Master 100% (alsactl store persisted), TTS engine does not manage volume.
 
 **Core constraint:** ASR and TTS run on pure CPU; LLM runs on GPU. This ensures voice processing never competes with LLM inference for GPU resources.
 
-**Voice assistant pipeline (implemented):** Microphone → VAD → ASR (port 12347) → LLM (Router port 12345, 35B-A3B via alias 358 with prewarm) → TTS (port 12348) → Speaker. Full pipeline code complete, pending integration testing.
+**Voice assistant pipeline (implemented):** Microphone → VAD → ASR (port 12347) → Wake word detection → LLM (Router port 12345, 35B-A3B via alias 358 with prewarm) → TTS (port 12348) → Speaker. Full pipeline code complete, pending integration testing.
 
 **Monitoring broadcast pipeline (active):** Independent thread monitors hardware (GPU/CPU/RAM) + log alerts → TTS broadcast.
 

@@ -2,8 +2,9 @@
 """
 语音助手 - LLM 对话模块
 
-调用 Router (端口 12345) 管理的 358 模型。
-358 设置了 sleep-idle-seconds 600，空闲后自动卸载，需 prewarm 唤醒。
+调用 Router (端口 12345) 管理的 358 模型（Qwen3.6-35B-A3B-UD-Q8_K_XL）。
+Router 双模型模式 (models-max=2)，358 通过 router-preset.ini 配置。
+sleep-idle-seconds=600，空闲后自动卸载，需 prewarm 唤醒。
 
 端点: POST http://127.0.0.1:12345/v1/chat/completions
 """

@@ -760,17 +760,17 @@ QClaw（OpenClaw）— 个人 AI 助手，支持多渠道（微信、QQ、网页
 
 #### TTS 语音合成服务
 
-Qwen3-TTS 1.7B CustomVoice 模型纯 CPU 运行，为监控广播系统和语音助手提供语音输出。支持 9 种预置音色（含中文女声 vivian/serena）。
+Qwen3-TTS 0.6B CustomVoice 模型纯 CPU 运行，为监控广播系统和语音助手提供语音输出。支持 9 种预置音色（含中文女声 vivian/serena）。
 
 | 项目 | 详情 |
 |------|---------|
-| 模型 | Qwen3-TTS-12Hz-1.7B-CustomVoice |
-| 路径 | `/home/zxw/model-tts/Qwen3-TTS-12Hz-1.7B-CustomVoice/` |
+| 模型 | Qwen3-TTS-12Hz-0.6B-CustomVoice |
+| 路径 | `/home/zxw/model-tts/Qwen3-TTS-12Hz-0.6B-CustomVoice/` |
 | 服务 | systemd 用户服务 `qwen3-tts.service`（端口 12348，已启用） |
 | 启动脚本 | `/home/zxw/scripts/qwen3-tts.sh` |
-| 启动参数 | `-S`（非流式模式） |
-| 性能 | RTF ~1.8-2.5（纯 CPU 8 线程），短文本 ~2.9s |
-| 内存 | ~3.2 GB |
+| 启动参数 | `-S`（非流式模式）+ `-j 8`（8 线程） |
+| 性能 | RTF ~1.3-2.7（纯 CPU 8 线程，比 1.7B 快约 40%） |
+| 内存 | ~668 MB |
 
 **预置音色：**
 
@@ -786,7 +786,7 @@ Qwen3-TTS 1.7B CustomVoice 模型纯 CPU 运行，为监控广播系统和语音
 | sohee | 韩语 | 女 |
 | jessica | 英语 | 女 |
 
-> ⚠️ 之前使用 Base 模型时 `spk_id` 为空，speaker 参数被忽略，所有输出均为默认男声。CustomVoice 模型包含预置 speaker 映射，speaker 参数生效。Base 模型保留在 `/home/zxw/model-tts/Qwen3-TTS-12Hz-1.7B-Base/` 但不再加载。
+> ⚠️ 之前使用 Base 模型时 `spk_id` 为空，speaker 参数被忽略，所有输出均为默认男声。CustomVoice 模型包含预置 speaker 映射，speaker 参数生效。2026-06-25 从 1.7B 切换到 0.6B（节省 ~2.8GB 内存，快约 40%）。Base 模型保留在 `/home/zxw/model-tts/Qwen3-TTS-12Hz-1.7B-Base/` 但不再加载。
 
 **API 端点：**
 
@@ -895,14 +895,14 @@ exec "$SERVER" \
 应用套件位于仓库 `ai-station-angle/` 目录，为推理站提供监控广播和语音助手能力。
 
 **文件：**
-- `monitor-broadcast.py` — 监控广播系统脚本
-- `voice_assistant.py` — 语音助手主程序（Mic → VAD → ASR → LLM → TTS → 播放）
+- `monitor-broadcast.py` — 监控广播系统脚本（v8）
+- `voice_assistant.py` — 语音助手主程序（Mic → VAD → ASR → 唤醒词 → LLM → TTS → 播放）
 - `mic_recorder.py` — 麦克风录音模块（ALSA + 能量 VAD）
 - `asr_module.py` — ASR 语音识别模块（port 12347）
 - `llm_module.py` — LLM 对话模块（Router port 12345，别名 358 含 prewarm，tool calling）
-- `tts_module.py` — TTS 语音合成模块（port 12348）
+- `tts_module.py` — TTS 语音合成模块（port 12348，0.6B CustomVoice）
 - `tools.py` — 工具定义与执行（6 个工具：时间/系统信息/搜索/天气/网页/计算器）
-- `voice_assistant_monitor_requirements.md` — 需求文档
+- `voice_assistant_monitor_requirements.md` — 需求文档（v3）
 
 **监控广播系统（v8，生产版）：**
 
@@ -940,11 +940,11 @@ exec "$SERVER" \
 - 播放：非流式 WAV 模式（默认，稳定）— TTS 合成完整 WAV 后由 `aplay` 播放
 - 流式预缓冲模式可通过 `TTS_USE_STREAM = True` 开关启用
 
-**系统音量：** ALSA Master 100%，TTS 引擎不管理音量。
+**系统音量：** ALSA Master 100%（alsactl store 持久化），TTS 引擎不管理音量。
 
 **核心约束：** ASR 和 TTS 纯 CPU 运行；LLM 在 GPU 上运行。确保语音处理不会与 LLM 推理争抢 GPU 资源。
 
-**语音助手管道（已实现）：** 麦克风 → VAD → ASR（port 12347）→ LLM（Router port 12345，35B-A3B 别名 358 含 prewarm）→ TTS（port 12348）→ 扬声器。完整链路代码完成，待联调测试。
+**语音助手管道（已实现）：** 麦克风 → VAD → ASR（port 12347）→ 唤醒词检测 → LLM（Router port 12345，35B-A3B 别名 358 含 prewarm）→ TTS（port 12348）→ 扬声器。完整链路代码完成，待联调测试。
 
 **监控广播管道（已上线）：** 独立线程监控硬件（GPU/CPU/RAM）+ 日志告警 → TTS 广播。
 

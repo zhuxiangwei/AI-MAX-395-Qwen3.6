@@ -13,6 +13,10 @@ TTS 播放策略：
   - 日常播报包含 CPU 负载、GPU 负载、温度、内存信息
   - 任务编号逐位中文朗读
 
+硬件数据源：
+  - hw-temp.log（hw-temp.service 持续运行，每 60s 写入一行）
+  - 包含 GPU 负载/温度、CPU 温度、NVMe/网卡/WiFi 温度
+
 音量控制（ALSA 系统级）：
   1. ALSA PCM 音量（播放通道）
   2. ALSA Speaker/Headphone（输出通道）

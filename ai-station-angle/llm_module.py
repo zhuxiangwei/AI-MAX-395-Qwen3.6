@@ -2,21 +2,26 @@
 """
 语音助手 - LLM 对话模块
 
-调用本地 llama-server (Qwen3.6-35B-A3B 语音助手专用实例) 的 OpenAI 兼容 API。
-支持 tool calling：LLM 可自主调用工具获取实时数据。
+调用 Router (端口 12345) 管理的 358 模型。
+358 设置了 sleep-idle-seconds 600，空闲后自动卸载，需 prewarm 唤醒。
 
-端点: POST http://127.0.0.1:12346/v1/chat/completions
-注意: 12346 端口无需 API Key（仅本地访问）
+端点: POST http://127.0.0.1:12345/v1/chat/completions
 """
 
 import json
+import threading
+import http.client
 from openai import OpenAI
 from tools import TOOLS, execute_tool_calls
 
-LLM_HOST = "127.0.0.1"
-LLM_PORT = 12346  # 35B-A3B 语音助手专用实例（非 router 12345）
-LLM_MODEL = "Qwen3.6-35B-A3B-UD-Q8_K_XL"
-MAX_TOOL_ROUNDS = 5  # 防止 LLM 陷入 tool call 死循环
+# Router 统一入口
+ROUTER_HOST = "127.0.0.1"
+ROUTER_PORT = 12345
+ROUTER_API_KEY = "71769f2CeCE681015e1B71eCf848900e"
+
+# 358 模型（由 Router 管理，alias=358）
+LLM_MODEL = "358"
+MAX_TOOL_ROUNDS = 5
 
 SYSTEM_PROMPT = """你是一个简洁的语音助手。回答要求：
 1. 口语化，简短直接，通常不超过两三句话
@@ -26,30 +31,99 @@ SYSTEM_PROMPT = """你是一个简洁的语音助手。回答要求：
 5. 如果工具返回了数据，基于数据给出自然简洁的回答，不要复述原始数据格式"""
 
 
-# OpenAI 兼容客户端（llama.cpp server 也支持这个协议）
-# 12346 端口无需 API Key，传占位符即可
 _client = OpenAI(
-    base_url=f"http://{LLM_HOST}:{LLM_PORT}/v1",
-    api_key="no-key",
+    base_url=f"http://{ROUTER_HOST}:{ROUTER_PORT}/v1",
+    api_key=ROUTER_API_KEY,
     timeout=300,
 )
 
+# Pre-warm 状态
+_prewarm_thread = None
+_prewarm_done = False
+
+
+def prewarm():
+    """后台预热 358 模型（唤醒词触发后立即调用）。
+
+    通过 POST /models/load 触发 Router 加载 358 模型。
+    不做任何推理，不污染 KV cache。
+    如果 358 已加载，立即返回。
+    """
+    global _prewarm_done, _prewarm_thread
+    _prewarm_done = False
+
+    def _do_prewarm():
+        global _prewarm_done
+        try:
+            conn = http.client.HTTPConnection(ROUTER_HOST, ROUTER_PORT, timeout=5)
+            # 检查 358 当前状态
+            conn.request("GET", "/v1/models", headers={"Authorization": f"Bearer {ROUTER_API_KEY}"})
+            resp = conn.getresponse()
+            data = json.loads(resp.read().decode())
+            conn.close()
+
+            # 找 358 的状态
+            status = None
+            for m in data.get("data", []):
+                if "35B-A3B" in m.get("id", "") or "358" in m.get("id", "") or "358" in str(m.get("aliases", [])):
+                    status = m["status"]["value"]
+                    break
+
+            if status == "loaded":
+                print("[LLM] 358 已就绪")
+                _prewarm_done = True
+                return
+
+            # 触发加载
+            print(f"[LLM] 358 状态={status}，触发 /models/load...")
+            conn = http.client.HTTPConnection(ROUTER_HOST, ROUTER_PORT, timeout=10)
+            conn.request(
+                "POST", "/models/load",
+                body=json.dumps({"model": "Qwen3.6-35B-A3B-UD-Q8_K_XL"}),
+                headers={
+                    "Authorization": f"Bearer {ROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            )
+            resp = conn.getresponse()
+            result = json.loads(resp.read().decode())
+            conn.close()
+            print(f"[LLM] /models/load 响应: {result}")
+
+            # 等待加载完成
+            for i in range(60):
+                import time
+                time.sleep(2)
+                conn = http.client.HTTPConnection(ROUTER_HOST, ROUTER_PORT, timeout=5)
+                conn.request("GET", "/v1/models", headers={"Authorization": f"Bearer {ROUTER_API_KEY}"})
+                resp = conn.getresponse()
+                data = json.loads(resp.read().decode())
+                conn.close()
+                for m in data.get("data", []):
+                    if "35B-A3B" in m.get("id", ""):
+                        status = m["status"]["value"]
+                        if status == "loaded":
+                            print("[LLM] 358 加载完成")
+                            _prewarm_done = True
+                            return
+                        break
+            print("[LLM] 358 加载超时")
+            _prewarm_done = True
+        except Exception as e:
+            print(f"[LLM] 预热失败: {e}")
+            _prewarm_done = True
+
+    _prewarm_thread = threading.Thread(target=_do_prewarm, daemon=True)
+    _prewarm_thread.start()
+
 
 def chat(user_text: str, history: list | None = None) -> str | None:
-    """发送文本到 LLM，支持 tool calling，返回回复文本。
+    """发送文本到 LLM，支持 tool calling，返回回复文本。"""
+    # 如果 prewarm 线程还在跑，等它完成
+    if _prewarm_thread and not _prewarm_done:
+        print("[LLM] 等待 358 唤醒完成...")
+        _prewarm_thread.join(timeout=120)
 
-    流程：
-      1. 发送用户消息 + tools 定义
-      2. 如果 LLM 返回 tool_calls → 执行工具 → 回喂结果
-      3. 重复直到 LLM 返回最终文本回复
-
-    Args:
-        user_text: 用户输入
-        history: 对话历史 [{"role": "user/assistant", "content": "..."}]
-
-    Returns:
-        LLM 回复文本，失败返回 None
-    """
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
         messages.extend(history)
@@ -74,12 +148,10 @@ def chat(user_text: str, history: list | None = None) -> str | None:
         finish_reason = choice.finish_reason
         msg = choice.message
 
-        # ── LLM 要调用工具 ──
         if finish_reason == "tool_calls" and hasattr(msg, "tool_calls") and msg.tool_calls:
             tool_round += 1
             print(f"[LLM] 第 {tool_round} 轮 tool calls ({len(msg.tool_calls)} 个)")
 
-            # 把 assistant 的 tool_call 消息加入对话
             messages.append({
                 "role": "assistant",
                 "content": None,
@@ -87,46 +159,29 @@ def chat(user_text: str, history: list | None = None) -> str | None:
                     {
                         "id": tc.id,
                         "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
                     }
                     for tc in msg.tool_calls
                 ],
             })
 
-            # 执行工具
             tool_calls_list = [
-                {
-                    "id": tc.id,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
+                {"id": tc.id, "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                 for tc in msg.tool_calls
             ]
             tool_responses = execute_tool_calls(tool_calls_list)
-
-            # 把工具结果加入对话
             for tr in tool_responses:
                 messages.append(tr)
-
-            # 继续下一轮，让 LLM 基于工具结果生成回答
             continue
 
-        # ── LLM 返回了最终文本 ──
         text = msg.content or ""
         if text.strip():
             print(f"[LLM] 回复: {text}")
             return text.strip()
         else:
-            # content 为空且不是 tool_calls，异常
             print(f"[LLM] 空回复 (finish_reason={finish_reason})")
             return None
 
-    # 超过最大轮数
     print(f"[LLM] 警告：tool calling 超过 {MAX_TOOL_ROUNDS} 轮，强制终止")
     return "抱歉，我在处理你的请求时遇到了一些问题，请稍后再试。"
 

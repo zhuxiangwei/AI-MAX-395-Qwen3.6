@@ -7,7 +7,7 @@ AI 台灯语音助手 - 主程序
 唤醒词模式:
   - 每段语音先过 ASR 识别
   - 检查文本是否包含唤醒词 ("你好小智" / "小智你好")
-  - 命中 → 播放唤醒回复 → 继续听指令 → LLM → TTS
+  - 命中 → prewarm 358 → 播放唤醒回复 → 继续听指令 → LLM → TTS
   - 未命中 → 丢弃，继续监听
 
 用法:
@@ -28,7 +28,7 @@ from pathlib import Path
 
 from mic_recorder import MicRecorder
 from asr_module import transcribe
-from llm_module import chat
+from llm_module import chat, prewarm
 from tts_module import speak, synthesize, play_wav
 
 # 唤醒回复缓存（预生成 WAV，避免每次合成）
@@ -142,6 +142,7 @@ def run_test_wake():
     if check_wake_word(text):
         cmd = extract_command(text)
         print(f"✅ 唤醒成功! 后续指令: '{cmd}'")
+        prewarm()  # 预热 358
         speak(WAKE_REPLY)
         if cmd:
             reply = chat(cmd)
@@ -160,7 +161,7 @@ def run_full_loop():
       2. ASR 识别
       3. 检查是否含唤醒词
          - 否 → 丢弃，回到 1
-         - 是 → 播放唤醒回复（阻塞，麦克风自然暂停）
+         - 是 → prewarm 358 → 播放唤醒回复（阻塞，期间358后台加载）
       4. 提取唤醒词后的指令
          - 有指令 → 直接送 LLM
          - 无指令 → 再录一段作为指令
@@ -199,9 +200,10 @@ def run_full_loop():
 
             print("✅ 唤醒成功!")
 
-            # ── 4. 播放唤醒回复（阻塞播放，期间不录音） ──
+            # ── 4. prewarm 358 + 播放唤醒回复（并行）──
+            prewarm()  # 后台线程触发 358 加载，不阻塞
             if WAKE_REPLY_PATH.exists():
-                play_wav(WAKE_REPLY_PATH)
+                play_wav(WAKE_REPLY_PATH)  # 播放期间 358 在后台加载
             else:
                 speak(WAKE_REPLY)
 

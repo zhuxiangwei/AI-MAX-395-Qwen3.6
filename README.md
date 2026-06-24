@@ -54,7 +54,7 @@ All benchmarks measured on {your_machine} (AMD Ryzen AI Max+ 395, 128 GB LPDDR5X
 
 Dense model — all 27B params active per token. Current Hermes default model.
 
-**Config: F16 KV + UB=256 + kv-unified=1 + cache-ram=49152 + slot-prompt-similarity=0.8.**
+**Config: F16 KV + UB=256 + kv-unified=1 + cache-ram=32768 + slot-prompt-similarity=0.8.**
 
 **Ruled out:** Q8_0 KV (1.7–2× KV space vs Q4_0, no significant prefill advantage); Q4_0 KV (Vulkan dequantization overhead negates bandwidth savings); UB≥1024 (long-context prefill degradation 11–34%); UB≥2048 (Vulkan crash).
 
@@ -151,16 +151,16 @@ Model uses `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as ba
 | Decision | Rationale |
 |----------|-----------|
 | Service = server-level, INI = model-level | Clean separation; change model params without touching service file |
-| Unified parallel=1, ctx=262144 | Simplifies config; single-user workloads; single-model mode `--models-max 1`; 256K context covers all prompt lengths |
+| Unified parallel=1, ctx=262144 (278) / 32768 (358) | Simplifies config; single-user workloads; dual-model mode `--models-max 2`; 278 uses 256K context for long conversations, 358 uses 32K for fast voice assistant responses |
 | Unified UB=256 | All models use ubatch=256 for stability. 278 UB=512 previously caused instability; unified to UB=256. UB≥1024 causes long-context prefill degradation; UB≥2048 Vulkan crash |
-| `cache-ram = 49152/65536` (per-model in INI) | Prompt cache enabled per model: 278=48 GB (primary, long conversations + single-model mode), 358=64 GB (auxiliary, configured for future use). Single-model mode (`models-max 1`) dedicates all GTT to one model, allowing larger cache-ram. Previously `16384/4096` in dual-model mode |
-| `reasoning-budget = 16384` (per-model in INI) | Prevents thinking tokens from exhausting KV cache/VRAM while allowing longer reasoning chains. Previously 8192, doubled for better reasoning quality |
+| `cache-ram = 32768/4096` (per-model in INI) | Prompt cache enabled per model: 278=32 GB (primary, long conversations), 358=4 GB (auxiliary, voice assistant). Dual-model mode (`models-max 2`) requires conservative cache-ram to fit both models in GTT. Previously `49152/65536` in single-model mode |
+| `reasoning-budget = 16384` (278) / `0` (358) | 278: prevents thinking tokens from exhausting KV cache/VRAM while allowing longer reasoning chains. 358: reasoning disabled for fast voice assistant responses |
 | No `reasoning-format = none` | This parameter puts thinking content into `delta.content` instead of `delta.reasoning_content`, causing SSE clients (like OpenClaw/QClaw) to mix thinking with the actual response, leading to duplicate output. Do not add it |
-| All models: `parallel = 1`, `ctx-size = 262144` | 256K context per slot; single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
-| Service: `--models-max 1` | Single-model mode: only 278 loaded (primary). 358 available for manual switch (8-17s cold load). Previously `models-max 2` (dual-model resident) caused GTT memory pressure; switched to single-model with larger per-model cache-ram (49152 for 278). Slot-save-path provides KV checkpoint persistence across switches |
+| All models: `parallel = 1` | Single-user workload never needs concurrent slots; `parallel > 1` wastes KV cache memory |
+| Service: `--models-max 2` | Dual-model mode: 278 and 358 loaded simultaneously. Router auto-switches via LRU. Previously `models-max 1` (single-model) to save GTT; switched back to dual-model with reduced cache-ram (32768/4096) |
 | 27B Dense: `parallel = 1` only | `parallel ≥ 3` triggers Vulkan bug on 27B Dense models (see Known Issues) |
-| `--spec-draft-n-max 2` | 3 is 20.6% slower than 2; 2 provides best speed/accuracy tradeoff with quantized KV cache |
-| `-t 8` for all models | No difference vs `-t 16` with full GPU offload; t=8 runs cooler |
+| `spec-draft-n-max = 3` (both models) | Upgraded from 2 to 3 for better speculative decoding. 3 is 20.6% slower than 2 with Q8_0 KV, but with F16 KV cache the tradeoff favors accuracy at n=3 |
+| `-t 8` (278) / `-t 4` (358) | 278: no difference vs `-t 16` with full GPU offload; t=8 runs cooler. 358: fewer threads to leave CPU headroom for 278 |
 | No `--no-mmap` | No benefit; `--mmap` (default) + `--mlock` is the best combination |
 | `-a Qwen3.6` | Sets model name in API responses; required by clients that validate the model field |
 | `alias` short names | Convenient routing without symlinks; both alias and filename work |
@@ -169,21 +169,22 @@ Model uses `mmproj-F16.gguf` (899 MB, qwen35moe architecture). Images sent as ba
 | System: CPU governor=performance | Reduces GPU command submission latency; improves gen speed and TTFT stability |
 | System: `processor.max_cstate=1` | Prevents CPU deep C-states; reduces Vulkan command submission latency spikes |
 | System: `vm.swappiness=1`, `vm.overcommit_memory=1` | Minimizes swap usage and prevents OOM killer false positives |
-| No `--sleep-idle-seconds` | Loaded models stay resident; idle-unload → reload cycle causes memory spikes and OOM (see Known Issues) |
+| `sleep-idle-seconds` per-model | 278=1800s (30min), 358=600s (10min). Models auto-unload after idle period to free GTT. Safe with dual-model mode since only one model unloads at a time |
 
 ### Usage Constraints
 
 | Constraint | Value | Reason |
 |-----------|-------|--------|
 | All models: concurrent slots | 1 (`parallel = 1`) | Single-user workload; `parallel > 1` wastes KV cache memory |
-| All models: max context | 256K (`ctx-size = 262144`) | Unified context covers all prompt lengths |
+| All models: max context | 256K (278: `ctx-size = 262144`), 32K (358: `ctx-size = 32768`) | 278: unified context covers all prompt lengths. 358: 32K sufficient for voice assistant conversations |
 | 27B Dense: `parallel` | 1 only | `parallel ≥ 3` triggers Vulkan bug (see Known Issues) |
 | 35B MoE: UB constraints | UB=256 (current, stable across all context lengths) | Both 278 and 358 unified to UB=256 for stability; UB≥1024 degrades at ≥128K; UB≥2048 Vulkan crash |
 | 27B Dense: UB constraints | F16 KV UB=256 (current, 278) | UB=512 previously caused instability; unified to UB=256; UB≥2048 Vulkan crash |
-| Thinking mode | All models: enabled (`reasoning-budget=16384`) | Budget cap prevents runaway thinking; `reasoning=off` causes checkpoint restore bug (see Known Issues); clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
+| Thinking mode | 278: enabled (`reasoning-budget=16384`), 358: disabled (`reasoning-budget=0`) | 278: budget cap prevents runaway thinking. 358: no reasoning for fast voice responses. Clients disable thinking per-request via `chat_template_kwargs.enable_thinking: false` |
 | No `reasoning-format=none` | Do not add | Causes thinking content to appear in `delta.content` instead of `delta.reasoning_content`, breaking SSE client parsing (see Known Issues) |
-| `cache-ram` | 278=`49152`, 358=`65536` (per-model in INI) | Prompt cache sized per model role: 278 (primary, 48 GB) in single-model mode; 358 (auxiliary, 64 GB) for future dual-model. Previously `16384/4096` in dual-model mode; `--cache-ram -1` caused unbounded growth (see Known Issues) |
+| `cache-ram` | 278=`32768`, 358=`4096` (per-model in INI) | Prompt cache sized per model role: 278 (primary, 32 GB) in dual-model mode; 358 (auxiliary, 4 GB). Previously `49152/65536` in single-model mode; `--cache-ram -1` caused unbounded growth (see Known Issues) |
 | `kv-unified` | 1 (all models, set in INI) | Unified KV cache; required for Vulkan slot-save/restore; bypasses GGML_ASSERT crash on unified memory |
+| `sleep-idle-seconds` | 278=`1800`, 358=`600` (per-model in INI) | Auto-unload idle models to free GTT. Safe in dual-model mode — only one model unloads at a time |
 | `b` must divide by `ub` | `n_batch % n_ubatch == 0` | llama.cpp requirement |
 
 ### Parameter Separation Principle
@@ -303,7 +304,7 @@ cmake --build build -j$(nproc)
 
 ### Model Inventory
 
-Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-max 1`): 278 loaded by default; 358 available for manual switch (8-17s cold load). Each model has an **alias** for short-name routing.
+Router Mode serves all models from `$HOME/model/`. Dual-model mode (`--models-max 2`): 278 and 358 loaded simultaneously; router auto-switches via LRU. Each model has an **alias** for short-name routing.
 
 **Model sources (HuggingFace):**
 
@@ -314,12 +315,12 @@ Router Mode serves all models from `$HOME/model/`. Single-model mode (`--models-
 
 | Alias | File | Source | Quant | Arch | Size | Active Params | Role |
 |-------|------|--------|-------|------|------|---------------|------|
-| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Auxiliary (Hermes auxiliary tasks, vision) |
-| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Primary (Hermes default + fallback) |
+| **358** | `Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf` | UD-35B | UD-Q8_K_XL | **MoE** | ~37 GB | 3B | Auxiliary (voice assistant, fast response) |
+| **278** | `Qwen3.6-27B-UD-Q8_K_XL.gguf` | UD-27B | UD-Q8_K_XL | Dense | ~33 GB | 27B | Primary (Hermes default + fallback, vision-capable) |
 
 > **Alias naming convention:** UD models use 3 digits = model size + quant level (e.g. `358` = 35B Q8, `278` = 27B Q8). Both alias and full filename work in API requests.
 >
-> **Deployment mode:** Single-model mode (`models-max 1`): 278 loaded by default; 358 available for manual switch (8-17s cold load). Per-model `cache-ram` limits (278=49152, 358=65536) sized for single-model GTT budget. GTT 120GB + mlock=1. No `--sleep-idle-seconds`.
+> **Deployment mode:** Dual-model mode (`models-max 2`): 278 and 358 loaded simultaneously. Per-model `cache-ram` limits (278=32768, 358=4096) sized for dual-model GTT budget. GTT 120GB + mlock=1. Per-model `sleep-idle-seconds` (278=1800, 358=600) for auto-unload.
 
 ### 1. Cloud Nginx Configuration
 
@@ -457,134 +458,103 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 > 32 GB swap provides safety margin for model cold-load memory spikes. With models resident, actual swap usage is minimal (~17 MB observed).
 
-### 5. GPU Temperature Monitoring
+### 5. Hardware Temperature Monitoring
 
-The FEVM FAEX1 mini PC motherboard (ITE 0x5571 chip) has no upstream Linux `lm-sensors` driver, and the AMD Ryzen AI Max+ 395 `k10temp` module is not recognized on kernel 7.0.0-15. However, GPU temperature is available via the `amdgpu` hwmon subsystem.
+The FEVM FAEX1 mini PC motherboard (ITE 0x5571 chip) has no upstream Linux `lm-sensors` driver. Hardware temperatures are available via the hwmon subsystem for multiple sensors: GPU (amdgpu hwmon7), CPU (k10temp hwmon4), NVMe (hwmon2), NIC r8169 (hwmon3), NIC eno1 (hwmon5), WiFi (hwmon6).
 
-**Monitoring script:** `~/scripts/gpu-temp-log.sh`
+**Monitoring script:** `~/scripts/hw-temp.sh`
 
 ```bash
 #!/bin/bash
-# GPU temperature logger — reads amdgpu hwmon
-# Runs every 5 minutes via systemd user timer
+# 硬件温度/负载综合日志
+# 记录 GPU(amdgpu) / CPU(k10temp) / NVMe / 网卡 等温度 + GPU 负载
 
-LOGDIR="$HOME/logs"
-mkdir -p "$LOGDIR"
+INTERVAL=60
+LOGFILE="/home/zxw/logs/hw-temp.log"
+mkdir -p "$(dirname "$LOGFILE")"
 
-ts=$(date '+%Y-%m-%d %H:%M:%S')
+echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] hw-temp started" >> "$LOGFILE"
 
-gpu_temp=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp1_input 2>/dev/null)
-gpu_temp_c=$((gpu_temp / 1000))
-
-gpu_junc=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp2_input 2>/dev/null)
-gpu_junc_c=$((gpu_junc / 1000))
-
-gpu_mem=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/temp3_input 2>/dev/null)
-gpu_mem_c=$((gpu_mem / 1000))
-
-gpu_busy=$(cat /sys/class/drm/card0/device/gpu_busy_percent 2>/dev/null)
-
-gpu_pwr_uw=$(cat /sys/class/drm/card0/device/hwmon/hwmon*/power1_input 2>/dev/null)
-gpu_pwr_w=$((gpu_pwr_uw / 1000000))
-
-mem_avail=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
-mem_total=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-mem_used_gb=$(awk "BEGIN {printf \"%.1f\", ($mem_total - $mem_avail) / 1048576}")
-mem_total_gb=$(awk "BEGIN {printf \"%.1f\", $mem_total / 1048576}")
-
-junc_str="${gpu_junc_c}°C"
-mem_str="${gpu_mem_c}°C"
-[ "$gpu_junc" = "" ] && junc_str="N/A"
-[ "$gpu_mem" = "" ] && mem_str="N/A"
-
-echo "$ts | GPU ${gpu_temp_c}°C (junc ${junc_str}, mem ${mem_str}) | ${gpu_busy}% busy | ${gpu_pwr_w}W | RAM ${mem_used_gb}/${mem_total_gb}GB"
+while true; do
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # GPU 负载
+    busy=$(cat /sys/class/drm/card*/device/gpu_busy_percent 2>/dev/null | head -1)
+    
+    # 各传感器温度
+    gpu_edge=$(cat /sys/class/hwmon/hwmon7/temp1_input 2>/dev/null)
+    cpu_tctl=$(cat /sys/class/hwmon/hwmon4/temp1_input 2>/dev/null)
+    nvme=$(cat /sys/class/hwmon/hwmon2/temp1_input 2>/dev/null)
+    nic_r8169=$(cat /sys/class/hwmon/hwmon3/temp1_input 2>/dev/null)
+    nic_eno1=$(cat /sys/class/hwmon/hwmon5/temp1_input 2>/dev/null)
+    wifi=$(cat /sys/class/hwmon/hwmon6/temp1_input 2>/dev/null)
+    
+    # 转换为 °C
+    gpu_edge=${gpu_edge:+$((gpu_edge / 1000))}
+    cpu_tctl=${cpu_tctl:+$((cpu_tctl / 1000))}
+    nvme=${nvme:+$((nvme / 1000))}
+    nic_r8169=${nic_r8169:+$((nic_r8169 / 1000))}
+    nic_eno1=${nic_eno1:+$((nic_eno1 / 1000))}
+    wifi=${wifi:+$((wifi / 1000))}
+    
+    echo "$ts gpu_busy=${busy:-0}% gpu=${gpu_edge:-NA}°C cpu=${cpu_tctl:-NA}°C nvme=${nvme:-NA}°C r8169=${nic_r8169:-NA}°C eno1=${nic_eno1:-NA}°C wifi=${wifi:-NA}°C" >> "$LOGFILE"
+    sleep "$INTERVAL"
+done
 ```
 
-**systemd user timer:** `~/.config/systemd/user/gpu-temp-log.timer`
+**systemd user service:** `~/.config/systemd/user/hw-temp.service`
 
 ```ini
 [Unit]
-Description=GPU Temperature Logger Timer
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=5min
-
-[Install]
-WantedBy=timers.target
-```
-
-**systemd user service:** `~/.config/systemd/user/gpu-temp-log.service`
-
-```ini
-[Unit]
-Description=GPU Temperature Logger
+Description=Hardware Temperature Logger
 
 [Service]
-Type=oneshot
-ExecStart=/bin/bash -c '/home/$USER/scripts/gpu-temp-log.sh >> /home/$USER/logs/gpu-temp.log 2>&1'
+Type=simple
+ExecStart=/bin/bash -c '/home/$USER/scripts/hw-temp.sh'
+Restart=on-failure
+RestartSec=10
 ```
 
 **Setup:**
 
 ```bash
 mkdir -p ~/scripts ~/logs
-chmod +x ~/scripts/gpu-temp-log.sh
+chmod +x ~/scripts/hw-temp.sh
 systemctl --user daemon-reload
-systemctl --user enable --now gpu-temp-log.timer
+systemctl --user enable --now hw-temp.service
 ```
 
 **Sample output:**
 ```
-2026-06-03 13:25:28 | GPU 82°C (junc N/A, mem N/A) | 100% busy | 108W | RAM 106.0/124.9GB
+2026-06-24 18:11:42 gpu_busy=100% gpu=71°C cpu=70°C nvme=41°C r8169=51°C eno1=55°C wifi=47°C
 ```
 
-> **Note:** Junction and memory temperatures are not available on this APU. GPU edge temperature (`temp1_input`) is the primary monitoring metric. Observed range under full inference load: 78–82°C (TjMax 100°C).
+> **Note:** The monitor-broadcast system reads `hw-temp.log` for hardware alerts. GPU temp warn=80°C, crit=90°C. CPU temp warn=80°C, crit=90°C. Observed range under full inference load: GPU 78–83°C, CPU 74–82°C (TjMax 100°C).
 
 ### 6. Preset INI (Per-Model Parameters)
 
 **File:** `~/model/router-preset.ini`
 
 ```ini
+; Router preset - 所有模型由 Router 统一管理
+; models-max=2: 278和358可同时加载
+;
+; cache-idle-slots: 全部开启（默认），空闲KV cache存入cache-ram释放显存
+; timeout: HTTP 并发等待窗口
 
 [Qwen3.6-27B-UD-Q8_K_XL]                    # alias: 278 — primary (Hermes default + fallback)
 n-gpu-layers = 99
-flash-attn = 1
+flash-attn = auto
 kv-unified = 1
 parallel = 1
 ctx-size = 262144
 batch-size = 4096
 ubatch-size = 256
 spec-type = draft-mtp
-spec-draft-n-max = 2
-cache-ram = 49152
-slot-save-path = /home/zxw/kv-checkpoints/278/
-mlock = 1
-numa = distribute
-reasoning-budget = 16384
-threads = 8
-temp = 0.6
-top-p = 0.95
-top-k = 20
-presence-penalty = 0.0
-min-p = 0.0
-slot-prompt-similarity = 0.8
-alias = 278
-
-[Qwen3.6-35B-A3B-UD-Q8_K_XL]                # alias: 358 — auxiliary (manual switch, vision-capable)
-n-gpu-layers = 99
-flash-attn = 1
-kv-unified = 1
-parallel = 1
-ctx-size = 262144
-batch-size = 4096
-ubatch-size = 256
-mmproj = /home/zxw/mmproj/mmproj-F16.gguf
+spec-draft-n-max = 3
+cache-ram = 32768
+mmproj = /home/zxw/mmproj/mmproj-Qwen3.6-27B-F16.gguf
 image-min-tokens = 2048
-spec-type = draft-mtp
-spec-draft-n-max = 2
-cache-ram = 65536
-slot-save-path = /home/zxw/kv-checkpoints/358/
 mlock = 1
 numa = distribute
 reasoning-budget = 16384
@@ -595,9 +565,34 @@ top-k = 20
 presence-penalty = 0.0
 min-p = 0.0
 slot-prompt-similarity = 0.8
+sleep-idle-seconds = 1800
+alias = 278
+timeout = 3600
+
+[Qwen3.6-35B-A3B-UD-Q8_K_XL]                # alias: 358 — auxiliary (voice assistant, fast response)
+n-gpu-layers = 99
+flash-attn = auto
+kv-unified = 1
+parallel = 1
+ctx-size = 32768
+batch-size = 4096
+ubatch-size = 256
+spec-type = draft-mtp
+spec-draft-n-max = 3
+cache-ram = 4096
+mlock = 1
+numa = distribute
+reasoning-budget = 0
+threads = 4
+temp = 0.6
+top-p = 0.95
+top-k = 20
+presence-penalty = 0.0
+min-p = 0.0
+slot-prompt-similarity = 0.8
+sleep-idle-seconds = 600
 alias = 358
-
-
+timeout = 600
 ```
 
 **To change model parameters:** edit the INI file → restart llama-server (via `systemctl --user restart llm-router` or manual restart)
@@ -633,26 +628,26 @@ systemctl --user start llama-router
 loginctl enable-linger   # survive logout
 ```
 
-> The service uses a wrapper script (`llama-router.sh`) that handles SIGTERM cleanup (saves KV checkpoint before exit) and logs output. `ExecStartPost` automatically restores the last checkpoint on startup. The wrapper runs `llama-server` with `--models-max 1` (single-model mode, 278 loaded by default) and `--models-preset` (per-model params from INI). Model parameters (cache-ram, ubatch, etc.) are defined in the preset INI, not in the service file. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights. `TimeoutStartSec=300` prevents systemd from killing the service during long model loads.
+> The service uses a wrapper script (`llama-router.sh`) that handles SIGTERM cleanup and logs output. The wrapper runs `llama-server` with `--models-max 2` (dual-model mode, 278 + 358 loaded simultaneously) and `--models-preset` (per-model params from INI). Model parameters (cache-ram, ubatch, etc.) are defined in the preset INI, not in the service file. GTT 120GB + mlock=1 ensures model weights stay in physical memory. `LimitMEMLOCK=infinity` allows mlock of all model weights. `TimeoutStartSec=300` prevents systemd from killing the service during long model loads.
 
 ### 8. Model Switching
 
-Clients specify the `model` field in API requests. Both **alias short names** and **full filenames** work. Router switches automatically (LRU, 8–17 seconds cold load):
+Clients specify the `model` field in API requests. Both **alias short names** and **full filenames** work. Router auto-switches via LRU between the two resident models:
 
 ```bash
 # Using alias (recommended)
 curl https://{your_domain}/v1/chat/completions \
-  -H "Authorization: Bearer {your_api_key}" \
-  -d '{"model": "278", ...}'   # primary model (Hermes default)
+  -H "Authorization: Bearer *** \
+  -d '{"model": "278", ...}'   # primary model (Hermes default, vision-capable)
 
 # Using full filename (also works)
 curl https://{your_domain}/v1/chat/completions \
-  -H "Authorization: Bearer {your_api_key}" \
+  -H "Authorization: Bearer *** \
   -d '{"model": "Qwen3.6-35B-A3B-UD-Q8_K_XL", ...}'
 
-# Switch to auxiliary model (for vision, compression, etc.)
+# Auxiliary model (voice assistant, fast response)
 curl https://{your_domain}/v1/chat/completions \
-  -H "Authorization: Bearer {your_api_key}" \
+  -H "Authorization: Bearer *** \
   -d '{"model": "358", ...}'
 ```
 
@@ -670,7 +665,7 @@ curl https://{your_domain}/v1/chat/completions \
 |---|---|
 | **model.default** | `278` (27B Dense) |
 | **providers.models** | `278` |
-| **supports_vision** | `false` (278 has no vision capability) |
+| **supports_vision** | `true` (278 has mmproj for vision capability) |
 | **auxiliary tasks** | all → `278`, auxiliary tasks disable thinking |
 | **fallback_model** | `{provider: local-llm, model: '278'}` |
 
@@ -895,27 +890,28 @@ Application suite located in the repository at `ai-station-angle/`, providing mo
 - `voice_assistant.py` — Voice assistant main program (Mic → VAD → ASR → LLM → TTS → Speaker)
 - `mic_recorder.py` — Microphone recording module (ALSA + energy VAD)
 - `asr_module.py` — ASR speech recognition module (port 12347)
-- `llm_module.py` — LLM dialogue module (port 12346, tool calling)
+- `llm_module.py` — LLM dialogue module (Router port 12345, alias 358 with prewarm, tool calling)
 - `tts_module.py` — TTS speech synthesis module (port 12348)
 - `tools.py` — Tool definitions and execution (6 tools: time/system info/search/weather/web/calculator)
 - `voice_assistant_monitor_requirements.md` — Requirements document
 
-**Monitoring Broadcast System (v7, production):**
+**Monitoring Broadcast System (v8, production):**
 
-Automated monitoring and TTS broadcast service that monitors LLM inference status and hardware health in real-time.
+Automated monitoring and TTS broadcast service that monitors LLM inference status and hardware health in real-time. Reads `hw-temp.log` for comprehensive hardware monitoring (GPU, CPU, NVMe, NIC, WiFi temperatures).
 
 | Item | Details |
 |------|---------|
 | Script | `ai-station-angle/monitor-broadcast.py` |
 | Service | systemd user service `monitor-broadcast.service` (enabled, Restart=on-failure) |
 | State file | `~/.config/monitor-broadcast/state.json` |
+| Hardware log | `/home/zxw/logs/hw-temp.log` (from `hw-temp.sh` via `hw-temp.service`) |
 
 **Dual-frequency polling architecture:**
 
 | Poll type | Interval | Monitors |
 |-----------|----------|----------|
 | Fast poll | 180s | Model switching, inference task lifecycle (start/prefill complete/generation milestones/end/idle) |
-| Slow poll | 300s | Hardware alerts (GPU temp/RAM/power), log E/F level entries, daily broadcast |
+| Slow poll | 300s | Hardware alerts (GPU/CPU temp, system RAM), log E/F level entries, daily broadcast |
 
 **Daily broadcast interval:** 30 minutes.
 
@@ -924,22 +920,22 @@ Automated monitoring and TTS broadcast service that monitors LLM inference statu
 | Metric | WARN | CRIT |
 |--------|------|------|
 | GPU temperature | 80°C | 90°C |
-| Memory usage | 80% | 90% |
-| GPU power | 120W | 130W |
+| CPU temperature | 80°C | 90°C |
+| System memory usage | 80% | 90% |
 
 **Log alert keywords:** OOM, Xid, segfault, Vulkan crash (`vk::DeviceLostError`), subprocess crash, Fatal, Error. 5-minute deduplication on severity-3 alerts.
 
 **TTS broadcast queue:**
 - Queue limit: 3 items (overflow drops new items)
 - CRIT alerts (severity ≥ 3) jump to queue head
-- Playback: streaming pre-buffer mode — estimates audio duration, pre-fills 80% buffer, then starts `aplay` via FIFO pipe while TTS continues streaming
-- No fallback to non-streaming TTS (removed in production); if streaming fails, the broadcast is skipped
+- Playback: non-streaming WAV mode (default, stable) — full WAV generated before `aplay` plays
+- Streaming pre-buffer mode available via `TTS_USE_STREAM = True` toggle
 
 **System volume:** ALSA Master 95%, TTS engine does not manage volume.
 
 **Core constraint:** ASR and TTS run on pure CPU; LLM runs on GPU. This ensures voice processing never competes with LLM inference for GPU resources.
 
-**Voice assistant pipeline (implemented):** Microphone → VAD → ASR (port 12347) → LLM (port 12346, 35B-A3B dedicated instance with tool calling) → TTS (port 12348) → Speaker. Full pipeline code complete, pending integration testing.
+**Voice assistant pipeline (implemented):** Microphone → VAD → ASR (port 12347) → LLM (Router port 12345, 35B-A3B via alias 358 with prewarm) → TTS (port 12348) → Speaker. Full pipeline code complete, pending integration testing.
 
 **Monitoring broadcast pipeline (active):** Independent thread monitors hardware (GPU/CPU/RAM) + log alerts → TTS broadcast.
 
@@ -953,14 +949,13 @@ Automated monitoring and TTS broadcast service that monitors LLM inference statu
 - [ ] Inference box has SSH key for passwordless login to cloud
 - [ ] `llm-tunnel.service` created and **active**
 - [ ] Cloud: `ss -tlnp | grep 8080` shows tunnel listening
-- [ ] `llm-router.service` created and **active** (server-level params only)
-- [ ] `~/model/router-preset.ini` configured with per-model params + aliases (278/358 only)
-- [ ] Cloud: `curl http://127.0.0.1:8080/v1/models` returns models with aliases
-- [ ] Single-model mode: 278 loaded; 358 available for manual switch (8-17s cold load)
-- [ ] No `--sleep-idle-seconds` in service config (prevents OOM from reload cycles)
+- [ ] `llm-router.service` created and **active** (server-level params only, `--models-max 2`)
+- [ ] `~/model/router-preset.ini` configured with per-model params + aliases (278/358)
+- [ ] Dual-model mode: both 278 and 358 loaded; router auto-switches via LRU
+- [ ] Per-model `sleep-idle-seconds` configured (278=1800, 358=600)
 - [ ] External: `curl https://{your_domain}/health` returns `OK`
-- [ ] GPU temperature monitoring: `systemctl --user status gpu-temp-log.timer` active
-- [ ] GPU temp log: `cat ~/logs/gpu-temp.log` shows entries every 5 minutes
+- [ ] Hardware temperature monitoring: `systemctl --user status hw-temp.service` active
+- [ ] HW temp log: `cat ~/logs/hw-temp.log` shows entries every 60 seconds
 - [ ] Alias routing: `curl -d '{"model":"358",...}'`、`curl -d '{"model":"278",...}'` both work
 
 **Quick smoke test:**
@@ -1046,9 +1041,11 @@ GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
 
 ### OOM Kill with Dual-Model + `--sleep-idle-seconds`
 
-**Status:** Resolved — removed `--sleep-idle-seconds`; current deployment uses single-model mode (`models-max 1`)
+**Status:** Mitigated — per-model `sleep-idle-seconds` in INI (278=1800, 358=600); dual-model mode (`models-max 2`) with conservative `cache-ram` (32768/4096)
 
-**Historical scenario:** Dual-model resident mode (`models-max 2`) with `--sleep-idle-seconds`. Idle-unload/reload cycle caused memory spike exceeding 128 GB RAM → OOM Kill. Resolved by switching to single-model mode without `--sleep-idle-seconds`.
+**Historical scenario:** Dual-model resident mode (`models-max 2`) with `--sleep-idle-seconds`. Idle-unload/reload cycle caused memory spike exceeding 128 GB RAM → OOM Kill. Previously resolved by switching to single-model mode without `--sleep-idle-seconds`.
+
+**Current approach:** Back to dual-model mode with per-model `sleep-idle-seconds` and reduced `cache-ram`. The reduced cache-ram (32768 for 278, 4096 for 358) leaves sufficient GTT headroom for idle-unload/reload cycles. Only one model unloads at a time, so memory spikes are bounded.
 
 ### `reasoning=off` Causes Catastrophic Checkpoint Restore Slowdown
 
@@ -1102,11 +1099,11 @@ spec-draft-n-max = 3
 
 ### `--cache-ram -1` Causes VRAM Contention and 35B Cold-Load Stall
 
-**Status:** Mitigated — prompt cache now per-model in INI (278 `cache-ram = 49152`, 358 `cache-ram = 65536`). Single-model mode (`models-max 1`) prevents unbounded growth.
+**Status:** Mitigated — prompt cache now per-model in INI (278 `cache-ram = 32768`, 358 `cache-ram = 4096`). Dual-model mode (`models-max 2`) with conservative limits prevents unbounded growth.
 
 **Symptom:** `--cache-ram -1` allows prompt cache to grow without bound. In single-model mode, 278's cache consumed ~12+ GB, leaving insufficient headroom for 358 cold load (stalled 20+ minutes).
 
-**Fix:** Per-model `cache-ram` limits in INI + single-model mode. **Do not** use `--cache-ram -1` in any mode.
+**Fix:** Per-model `cache-ram` limits in INI + dual-model mode with conservative values. **Do not** use `--cache-ram -1` in any mode.
 
 ---
 
@@ -1158,4 +1155,4 @@ get_provider_stale_timeout("custom:local-llm", "278")     # should return 7200.0
 
 ---
 
-*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9692 Vulkan · 2026-06-20*
+*Tested on {your_machine} · AMD Ryzen AI Max+ 395 · 128 GB · llama.cpp b9692 Vulkan · 2026-06-24*

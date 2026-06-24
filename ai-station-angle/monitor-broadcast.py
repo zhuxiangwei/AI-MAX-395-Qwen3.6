@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-监控播报系统 v7 - LLM Log Monitor + Hardware Speaker
+监控播报系统 v8 - LLM Log Monitor + Hardware Speaker
 
 双频率轮询：
   - 快速轮询 (180s): 模型切换 + 推理任务状态变化（开始/prefill完成/结束/空闲）
@@ -44,7 +44,7 @@ sys.stderr.reconfigure(line_buffering=True)
 # ============ 配置 ============
 LOG_DIR = Path("/home/zxw/logs")
 ROUTER_LOG = LOG_DIR / "llama" / "router.log"
-GPU_TEMP_LOG = LOG_DIR / "gpu-temp.log"
+HW_TEMP_LOG = LOG_DIR / "hw-temp.log"
 STATE_FILE = Path("/home/zxw/.config/monitor-broadcast/state.json")
 MONITOR_LOG_DIR = LOG_DIR / "monitor"
 MONITOR_LOG_FILE = MONITOR_LOG_DIR / "monitor.log"
@@ -72,10 +72,10 @@ HTTP_TIMEOUT = 30
 # ============ 硬件阈值 ============
 GPU_TEMP_WARN = 80
 GPU_TEMP_CRIT = 90
+CPU_TEMP_WARN = 80
+CPU_TEMP_CRIT = 90
 MEM_WARN_PCT = 80
 MEM_CRIT_PCT = 90
-GPU_PWR_WARN = 120
-GPU_PWR_CRIT = 130
 
 # ============ 日志关键字告警 ============
 ALERT_KEYWORDS = [
@@ -96,12 +96,17 @@ TASK_GEN_RE = re.compile(r'print_timing.*?task\s+(\d+).*?n_decoded\s*=\s*(\d+).*
 TASK_IDLE_RE = re.compile(r'all slots are idle')
 MODEL_PROXY_RE = re.compile(r'proxying request to model\s+(.+?)\s+on port\s+(\d+)')
 
-GPU_TEMP_LOG_RE = re.compile(
-    r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*'
-    r'GPU\s+(\d+)°C.*?'
-    r'\|\s*(\d+)%\s*busy\s*\|\s*'
-    r'(\d+)W\s*\|\s*'
-    r'RAM\s+([\d.]+)/([\d.]+)GB'
+# hw-temp.log 格式:
+# 2026-06-24 18:11:42 gpu_busy=100% gpu=71°C cpu=70°C nvme=41°C r8169=51°C eno1=55°C wifi=47°C
+HW_TEMP_LOG_RE = re.compile(
+    r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+'
+    r'gpu_busy=(\d+)%\s+'
+    r'gpu=(\d+)°C\s+'
+    r'cpu=(\d+)°C\s+'
+    r'nvme=(\d+)°C\s+'
+    r'r8169=(\d+)°C\s+'
+    r'eno1=(\d+)°C\s+'
+    r'wifi=(\d+)°C'
 )
 
 # ============ 全局退出标志 ============
@@ -149,9 +154,8 @@ class BroadcastTexts:
     ERROR = ["检测到错误日志。", "出现 Error。"]
     HW_GPU_TEMP_CRIT = ["温度严重告警！{temp} 度！", "设备过热！{temp} 度！"]
     HW_GPU_TEMP_WARN = ["温度 {temp} 度，偏高。", "温度 {temp} 度。"]
-    HW_GPU_PWR_CRIT = ["功耗严重告警！{watt} 瓦！", "功率过高！{watt} 瓦！"]
-    HW_GPU_PWR_WARN = ["功耗 {watt} 瓦。", "功率 {watt} 瓦。"]
-    HW_GPU_PWR_HIGH = ["功耗 {watt} 瓦。", "功率 {watt} 瓦。"]
+    HW_CPU_TEMP_CRIT = ["CPU 温度严重告警！{temp} 度！", "CPU 过热！{temp} 度！"]
+    HW_CPU_TEMP_WARN = ["CPU 温度 {temp} 度，偏高。", "CPU 温度 {temp} 度。"]
     HW_MEM_CRIT = ["内存严重不足！{pct}%！", "内存快满了，{pct}%！"]
     HW_MEM_WARN = ["内存使用偏高，{pct}%。", "内存占用 {pct}%。"]
 
@@ -194,7 +198,6 @@ def get_cpu_load():
         return None
 
 
-
 def get_system_memory():
     """获取内存使用率"""
     try:
@@ -213,20 +216,22 @@ def get_system_memory():
         return None
 
 
-def get_last_gpu_status():
-    """从 gpu-temp.log 读取最新一行"""
+def get_hw_status():
+    """从 hw-temp.log 读取最新一行，解析 GPU/CPU/NVMe 等温度 + GPU 负载"""
     try:
-        with open(GPU_TEMP_LOG, "r") as f:
+        with open(HW_TEMP_LOG, "r") as f:
             lines = f.readlines()
         for line in reversed(lines):
-            m = GPU_TEMP_LOG_RE.search(line)
+            m = HW_TEMP_LOG_RE.search(line)
             if m:
                 return {
-                    "gpu_temp": int(m.group(2)),
-                    "gpu_busy": int(m.group(3)),
-                    "gpu_pwr": int(m.group(4)),
-                    "mem_used_gb": float(m.group(5)),
-                    "mem_total_gb": float(m.group(6)),
+                    "gpu_busy": int(m.group(2)),
+                    "gpu_temp": int(m.group(3)),
+                    "cpu_temp": int(m.group(4)),
+                    "nvme_temp": int(m.group(5)),
+                    "r8169_temp": int(m.group(6)),
+                    "eno1_temp": int(m.group(7)),
+                    "wifi_temp": int(m.group(8)),
                 }
     except Exception:
         pass
@@ -242,11 +247,13 @@ def build_daily_report():
     if cpu_load is not None:
         parts.append(f"CPU 负载 {cpu_load:.2f}")
 
-    # GPU 负载 + 温度（APU 统一架构）
-    gpu = get_last_gpu_status()
-    if gpu:
-        parts.append(f"GPU {gpu['gpu_busy']}%")
-        parts.append(f"温度 {gpu['gpu_temp']} 度")
+    # GPU/CPU 温度（hw-temp.log）
+    hw = get_hw_status()
+    if hw:
+        parts.append(f"GPU {hw['gpu_busy']}%")
+        parts.append(f"GPU 温度 {hw['gpu_temp']} 度")
+        parts.append(f"CPU 温度 {hw['cpu_temp']} 度")
+
     # 内存
     mem_pct = get_system_memory()
     if mem_pct is not None:
@@ -696,47 +703,48 @@ def analyze_router_slow(lines):
     return alerts
 
 
-# ============ gpu-temp.log 分析 ============
-def parse_gpu_temp_line(line):
-    m = GPU_TEMP_LOG_RE.search(line)
+# ============ hw-temp.log 分析 ============
+def parse_hw_temp_line(line):
+    m = HW_TEMP_LOG_RE.search(line)
     if not m:
         return None
     return {
         "timestamp": m.group(1),
-        "gpu_temp": int(m.group(2)),
-        "gpu_busy": int(m.group(3)),
-        "gpu_pwr": int(m.group(4)),
-        "mem_used_gb": float(m.group(5)),
-        "mem_total_gb": float(m.group(6)),
+        "gpu_busy": int(m.group(2)),
+        "gpu_temp": int(m.group(3)),
+        "cpu_temp": int(m.group(4)),
+        "nvme_temp": int(m.group(5)),
+        "r8169_temp": int(m.group(6)),
+        "eno1_temp": int(m.group(7)),
+        "wifi_temp": int(m.group(8)),
     }
 
 
-def analyze_gpu_temp_lines(lines):
+def analyze_hw_temp_lines(lines):
+    """分析 hw-temp.log 增量行，返回硬件告警列表"""
     alerts = []
     for line in lines:
-        data = parse_gpu_temp_line(line)
+        data = parse_hw_temp_line(line)
         if not data:
             continue
         line_alerts = []
+        # GPU 温度
         t = data["gpu_temp"]
         if t >= GPU_TEMP_CRIT:
             line_alerts.append({"type": "hw_gpu_temp_crit", "severity": 3, "temp": t})
         elif t >= GPU_TEMP_WARN:
             line_alerts.append({"type": "hw_gpu_temp_warn", "severity": 1, "temp": t})
-        p = data["gpu_pwr"]
-        if p >= GPU_PWR_CRIT:
-            line_alerts.append({"type": "hw_gpu_pwr_crit", "severity": 3, "watt": p})
-        elif p >= GPU_PWR_WARN:
-            line_alerts.append({"type": "hw_gpu_pwr_warn", "severity": 1, "watt": p})
-        mem_pct = data["mem_used_gb"] / data["mem_total_gb"] * 100
-        if mem_pct >= MEM_CRIT_PCT:
-            line_alerts.append({"type": "hw_mem_crit", "severity": 3, "pct": mem_pct})
-        elif mem_pct >= MEM_WARN_PCT:
-            line_alerts.append({"type": "hw_mem_warn", "severity": 1, "pct": mem_pct})
+        # CPU 温度
+        ct = data["cpu_temp"]
+        if ct >= CPU_TEMP_CRIT:
+            line_alerts.append({"type": "hw_cpu_temp_crit", "severity": 3, "temp": ct})
+        elif ct >= CPU_TEMP_WARN:
+            line_alerts.append({"type": "hw_cpu_temp_warn", "severity": 1, "temp": ct})
         if line_alerts:
             line_alerts.sort(key=lambda a: -a["severity"])
             alerts.append(line_alerts[0])
     return alerts
+
 
 # ============ 状态管理 ============
 def load_state():
@@ -796,7 +804,7 @@ def decide_slow_broadcast(alerts, state):
                 "vulkan_crash": ("VULKAN_CRASH", {}),
                 "child_crash": ("CHILD_CRASH", {}),
                 "hw_gpu_temp_crit": ("HW_GPU_TEMP_CRIT", {"temp": alert.get("temp", "?")}),
-                "hw_gpu_pwr_crit": ("HW_GPU_PWR_CRIT", {"watt": alert.get("watt", "?")}),
+                "hw_cpu_temp_crit": ("HW_CPU_TEMP_CRIT", {"temp": alert.get("temp", "?")}),
                 "hw_mem_crit": ("HW_MEM_CRIT", {"pct": f"{alert.get('pct', 0):.0f}"}),
             }
             category, kwargs = text_map.get(atype, ("CRITICAL", {}))
@@ -820,8 +828,7 @@ def decide_slow_broadcast(alerts, state):
         atype = alert["type"]
         hw_map = {
             "hw_gpu_temp_warn": ("HW_GPU_TEMP_WARN", {"temp": alert.get("temp", "?")}),
-            "hw_gpu_pwr_warn": ("HW_GPU_PWR_WARN", {"watt": alert.get("watt", "?")}),
-            "hw_gpu_pwr_high": ("HW_GPU_PWR_HIGH", {"watt": alert.get("watt", "?")}),
+            "hw_cpu_temp_warn": ("HW_CPU_TEMP_WARN", {"temp": alert.get("temp", "?")}),
             "hw_mem_warn": ("HW_MEM_WARN", {"pct": f"{alert.get('pct', 0):.0f}"}),
         }
         category, kwargs = hw_map.get(atype, ("HW_MEM_WARN", {}))
@@ -849,20 +856,26 @@ def main():
 
     setup_logging()
 
-    logging.info(f"[Monitor] 启动监控播报系统 v7 (流式预缓冲 80% TTS + 系统状态播报)")
+    logging.info(f"[Monitor] 启动监控播报系统 v8 (hw-temp.log 综合硬件监控)")
     logging.info(f"[Monitor] 高频轮询: {FAST_POLL}s (模型+任务) | 低频轮询: {SLOW_POLL}s (硬件+告警)")
     logging.info(f"[Monitor] TTS: {TTS_URL}")
     logging.info(f"[Monitor] speaker={TTS_SPEAKER} seed={TTS_SEED} language=chinese")
     logging.info(f"[Monitor] 队列最大: {TTS_QUEUE_MAX} 条，超出直接丢弃")
     logging.info(f"[Monitor] HTTP 超时: {HTTP_TIMEOUT}s")
     logging.info(f"[Monitor] 日志: {ROUTER_LOG}")
-    logging.info(f"[Monitor] 硬件: {GPU_TEMP_LOG}")
+    logging.info(f"[Monitor] 硬件: {HW_TEMP_LOG}")
     logging.info(f"[Monitor] 自身日志: {MONITOR_LOG_FILE} (5MB x3 轮转)")
 
     state = load_state()
     offsets = state.get("file_offsets", {})
 
-    for fpath in [ROUTER_LOG, GPU_TEMP_LOG]:
+    # 迁移：如果旧 gpu-temp.log offset 存在，清除它
+    old_gpu_key = str(LOG_DIR / "gpu-temp.log")
+    if old_gpu_key in offsets:
+        del offsets[old_gpu_key]
+        logging.info(f"[Monitor] 清除旧 gpu-temp.log offset")
+
+    for fpath in [ROUTER_LOG, HW_TEMP_LOG]:
         fp = str(fpath)
         if fp not in offsets:
             try:
@@ -914,15 +927,24 @@ def main():
                     if alerts:
                         logging.info(f"[Slow] {ROUTER_LOG.name}: {len(alerts)} 告警")
 
-                fp_gpu = str(GPU_TEMP_LOG)
-                offset_gpu = state["file_offsets"].get(fp_gpu, 0)
-                gpu_lines, gpu_new_offset = read_new_lines(GPU_TEMP_LOG, offset_gpu)
-                if gpu_lines:
-                    state["file_offsets"][fp_gpu] = gpu_new_offset
-                    hw_alerts = analyze_gpu_temp_lines(gpu_lines)
+                # 硬件温度告警
+                fp_hw = str(HW_TEMP_LOG)
+                offset_hw = state["file_offsets"].get(fp_hw, 0)
+                hw_lines, hw_new_offset = read_new_lines(HW_TEMP_LOG, offset_hw)
+                if hw_lines:
+                    state["file_offsets"][fp_hw] = hw_new_offset
+                    hw_alerts = analyze_hw_temp_lines(hw_lines)
                     all_alerts.extend(hw_alerts)
                     if hw_alerts:
-                        logging.info(f"[Slow] {GPU_TEMP_LOG.name}: {len(hw_alerts)} 告警")
+                        logging.info(f"[Slow] {HW_TEMP_LOG.name}: {len(hw_alerts)} 告警")
+
+                # 系统内存告警
+                mem_pct = get_system_memory()
+                if mem_pct is not None:
+                    if mem_pct >= MEM_CRIT_PCT:
+                        all_alerts.append({"type": "hw_mem_crit", "severity": 3, "pct": mem_pct})
+                    elif mem_pct >= MEM_WARN_PCT:
+                        all_alerts.append({"type": "hw_mem_warn", "severity": 1, "pct": mem_pct})
 
                 result = decide_slow_broadcast(all_alerts, state)
                 if result and result[0]:

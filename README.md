@@ -12,7 +12,7 @@
 
 ### 27B Dense Q8（别名 `278`）
 
-Dense 模型，每个 token 激活全部 27B 参数。当前 Hermes 默认模型。配置：F16 KV + UB=256 + cache-ram=32768。
+Dense 模型，每个 token 激活全部 27B 参数。当前 Hermes 默认模型。配置：q8_0 KV + UB=256 + cache-ram=49152。
 
 **生成速度（按上下文长度）：**
 
@@ -38,7 +38,7 @@ Dense 模型，每个 token 激活全部 27B 参数。当前 Hermes 默认模型
 
 ### 35B-A3B MoE（别名 `358`）
 
-MoE 模型，每个 token 仅激活 3B/35B 参数。~50 t/s 生成速度。配置：F16 KV + UB=256 + cache-ram=4096。
+MoE 模型，每个 token 仅激活 3B/35B 参数。~50 t/s 生成速度。配置：q8_0 KV + UB=256 + cache-ram=32768。
 
 **生成速度（按上下文长度）：**
 
@@ -198,6 +198,7 @@ server {
 Description=LLM SSH Reverse Tunnel
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -206,9 +207,10 @@ ExecStart=/usr/bin/ssh \
     -o ServerAliveInterval=60 \
     -o ServerAliveCountMax=3 \
     -o ExitOnForwardFailure=yes \
+    -o ConnectTimeout=10 \
     -R 8080:127.0.0.1:12345 \
     -N \
-    {your_server_user}@{your_server_ip}
+    root@115.190.196.72
 Restart=on-failure
 RestartSec=10
 
@@ -261,9 +263,12 @@ Description=Hardware Temperature Logger
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c '/home/$USER/scripts/hw-temp.sh'
+ExecStart=/home/zxw/scripts/hw-temp.sh
 Restart=on-failure
 RestartSec=10
+
+[Install]
+WantedBy=default.target
 ```
 
 ### 4. llama.cpp 配置文件
@@ -390,7 +395,7 @@ exec "$ROUTER" \
 
 ```ini
 [Unit]
-Description=Qwen3-TTS Service
+Description=Qwen3-TTS Server (0.6B)
 After=network.target
 
 [Service]
@@ -448,24 +453,33 @@ WantedBy=default.target
 
 ```bash
 #!/bin/bash
+# ASR 纯 CPU 推理（不占用 GPU，避免影响大模型）
+# ctx-size 65536 = 模型完整训练上下文
+# --no-cache-idle-slots: ASR不需要KV cache复用，关闭节约内存
+# --cache-ram 0: 关闭 prompt cache，ASR 每次独立推理无需缓存
+# --parallel 1: 单并发，ASR 单用户场景
+
 LOGDIR="/home/zxw/logs/llama"
 BINDIR="/home/zxw/llama.cpp/build/bin"
 SERVER="$BINDIR/llama-server"
 MODEL="/home/zxw/model-asr/Qwen3-ASR-1.7B-Q8_0.gguf"
 MMPROJ="/home/zxw/mmproj/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+PORT=12347
 
 export LD_LIBRARY_PATH="$BINDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 mkdir -p "$LOGDIR"
 
 exec "$SERVER" \
   --host 127.0.0.1 \
-  --port 12347 \
+  --port "$PORT" \
   --model "$MODEL" \
   --mmproj "$MMPROJ" \
   --ctx-size 65536 \
   --n-gpu-layers 0 \
   --threads 8 \
   --parallel 1 \
+  --mlock \
   --no-cache-idle-slots \
   --cache-ram 0 \
   --timeout 600 \

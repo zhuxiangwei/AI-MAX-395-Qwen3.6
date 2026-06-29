@@ -12,7 +12,7 @@
 
 ### 27B Dense Q8（别名 `278`）
 
-Dense 模型，每个 token 激活全部 27B 参数。配置：q8_0 KV + UB=256 + cache-ram=49152 + parallel=1 + MTP n=3。
+Dense 模型，每个 token 激活全部 27B 参数。配置：F16 KV + UB=256 + cache-ram=49152 + parallel=1 + MTP n=3。
 
 **生成速度：**
 
@@ -38,7 +38,7 @@ Dense 模型，每个 token 激活全部 27B 参数。配置：q8_0 KV + UB=256 
 
 ### 35B-A3B MoE（别名 `358`）
 
-MoE 模型，每个 token 仅激活 3B/35B 参数。配置：q8_0 KV + UB=256 + cache-ram=32768 + parallel=1 + MTP n=2。
+MoE 模型，每个 token 仅激活 3B/35B 参数。配置：F16 KV + UB=256 + cache-ram=32768 + parallel=1 + MTP n=2。
 
 **生成速度：**
 
@@ -172,8 +172,6 @@ ubatch-size = 256
 spec-type = draft-mtp
 spec-draft-n-max = 3
 cache-ram = 49152
-cache-type-k = q8_0
-cache-type-v = q8_0
 mmproj = /home/$USER/mmproj/mmproj-Qwen3.6-27B-F16.gguf
 image-min-tokens = 2048
 mlock = 1
@@ -201,8 +199,6 @@ ubatch-size = 256
 spec-type = draft-mtp
 spec-draft-n-max = 2
 cache-ram = 32768
-cache-type-k = q8_0
-cache-type-v = q8_0
 mmproj = /home/$USER/mmproj/mmproj-Qwen3.6-35B-A3B-F16.gguf
 image-min-tokens = 2048
 mlock = 1
@@ -226,7 +222,7 @@ timeout = 3600
 |------|-----|-----|------|
 | parallel | 1 | 1 | 单并发，避免显存竞争 |
 | cache-ram | 49152 | 32768 | MB 级 KV cache 穿透内存 |
-| cache-type | q8_0 | q8_0 | KV cache 量化，节省显存 |
+| cache-type | F16 | F16 | KV cache 默认精度 |
 | spec-draft-n-max | 3 | 2 | MTP draft token 数（27B 用 3，MoE 用 2） |
 | sleep-idle-seconds | 1800 | 600 | 空闲卸载时间（278: 30min, 358: 10min） |
 | reasoning-budget | 16384 | 16384 | 思考模式最大 token 数 |
